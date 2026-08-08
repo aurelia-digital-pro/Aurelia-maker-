@@ -1,0 +1,9 @@
+{
+  "name": "aurelia-maker-ui",
+  "version": "0.1.0",
+  "description": "Small helper UI for Aurelia Maker (optional)",
+  "private": true,
+  "scripts": {
+    "start": "echo 'UI optional — MVP is CLI-first' && exit 0"
+  }
+}

@@ -4,6 +4,6 @@
   "description": "Small helper UI for Aurelia Maker (optional)",
   "private": true,
   "scripts": {
-    "start": "echo 'UI optional — MVP is CLI-first' && exit 0"
+    "start": "echo 'UI optional �� MVP is CLI-first' && exit 0"
   }
 }

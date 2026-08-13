@@ -1,6 +1,7 @@
 """AURELIA Maker — production quality-control domain."""
 
 from __future__ import annotations
+from pathlib import Path
 
 from dataclasses import asdict, dataclass, field
 from typing import Any

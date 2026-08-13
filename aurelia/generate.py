@@ -54,6 +54,9 @@ def generate(script: str, episode: str, profile: str) -> None:
             "script": str(Path(script).resolve()),
             "episode": episode,
             "profile": profile,
+            "source_asset": str(
+                (Path("runs/acceptance/cinematic/source_asset.txt")).resolve()
+            ),
         },
         processors=pipeline.build_real_processors(),
         validators={

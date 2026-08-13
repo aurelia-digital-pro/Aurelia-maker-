@@ -57,12 +57,17 @@ def generate(script: str, episode: str, profile: str) -> None:
         },
         processors=pipeline.build_real_processors(),
         validators={
-            "SCRIPT": lambda result: bool(
-                result
-                and result.get("script")
-                and Path(result["script"]).exists()
-                and result.get("text", "").strip()
+            stage: (
+                (lambda result: bool(
+                    result
+                    and result.get("script")
+                    and Path(result["script"]).exists()
+                    and result.get("text", "").strip()
+                ))
+                if stage == "SCRIPT"
+                else (lambda result: isinstance(result, dict) and bool(result))
             )
+            for stage in pipeline.stages
         },
         run_id=getattr(run, "id", getattr(run, "run_id", None)),
     )

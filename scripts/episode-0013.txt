@@ -1,0 +1,19 @@
+"""AURELIA Maker — Episode 0013: First Cinematic Showcase
+
+This episode presents AURELIA Maker itself — the cinematic production factory
+that transforms ideas into finished films and series.
+"""
+
+Welcome to AURELIA Maker. This is not a demo. This is a real cinematic production system — a factory that transforms your ideas into finished films, episodes, and series.
+
+Every great film begins with an idea. AURELIA Maker takes that idea and develops it into a full script, a structured story, a defined world, and living characters ready for production.
+
+The Factory orchestrates thirty-one production stages — from research and pre-production through storyboards, animatics, and shot planning — all connected in one canonical pipeline.
+
+Visual production is where cinema comes alive. AURELIA generates cinematic scene plates, applies camera movement, depth of field, lighting, atmosphere, and visual effects — then renders real motion video, not static images.
+
+Sound completes the experience. Local text-to-speech narration, procedural ambient music, sound design, and precise audio mixing bring every scene to life with professional quality.
+
+The editorial pipeline assembles every shot, applies color grading, burns subtitles, masters the final encode, runs quality control, and delivers a real MP4 — ready to watch, share, and publish.
+
+This is Episode 0013. AURELIA Maker presenting itself — from Chat to Factory to Cinematic Production to Final MP4. The future of automated filmmaking starts here.

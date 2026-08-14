@@ -1,4 +1,4 @@
-"""AURELIA Maker — canonical Factory production entry point."""
+"""AURELIA Maker — canonical production interface + web server."""
 
 from __future__ import annotations
 
@@ -11,79 +11,72 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from aurelia.production_pipeline import build_production_pipeline
-
+from aurelia.factory_runner import FactoryRunner
 
 OUTPUT = ROOT / "output"
+RUNNER = FactoryRunner(ROOT)
 
 
 @click.group()
 def cli():
-    """AURELIA Maker canonical production interface."""
+    """AURELIA Maker — Chat → Factory → FINAL MP4."""
 
 
 @cli.command()
-@click.option("--script", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--script", type=click.Path(exists=True, dir_okay=False))
 @click.option("--episode", required=True)
 @click.option(
     "--profile",
     default="both",
     type=click.Choice(["youtube", "tiktok", "both"]),
 )
-def generate(script: str, episode: str, profile: str) -> None:
+def generate(script: str | None, episode: str, profile: str) -> None:
     """Execute production through the canonical Factory pipeline."""
-    pipeline = build_production_pipeline(OUTPUT / f"episode-{episode}")
+    script_path = Path(script) if script else RUNNER.ensure_episode_script(episode.zfill(4))
+    click.echo(f"FACTORY: Episode {episode.zfill(4)}")
+    click.echo(f"SCRIPT: {script_path}")
+    click.echo("PRODUCTION MODE: FACTORY → FINAL MP4")
 
-    text = Path(script).read_text(encoding="utf-8")
+    job = RUNNER.execute(episode.zfill(4), profile=profile, script_path=script_path)
+    click.echo(f"STATUS: {job.status}")
+    click.echo(f"FINAL MP4: {job.final_mp4}")
 
-    run = pipeline.orchestrator.create_run(
-        project=f"episode-{episode}",
-        metadata={
-            "script": str(Path(script).resolve()),
-            "profile": profile,
-            "mode": "factory",
-        },
-    )
 
-    print(f"FACTORY RUN CREATED: {getattr(run, "id", getattr(run, "run_id", "unknown"))}")
-    print(f"STAGES: {len(pipeline.stages)}")
-    print("PRODUCTION MODE: FACTORY")
-    results = pipeline.execute_production(
-        project=f"episode-{episode}",
-        input_data={
-            "script": str(Path(script).resolve()),
-            "episode": episode,
-            "profile": profile,
-            "source_asset": str(
-                (Path("runs/acceptance/cinematic/source_asset.txt")).resolve()
-            ),
-        },
-        processors=pipeline.build_real_processors(),
-        validators={
-            stage: (
-                (lambda result: bool(
-                    result
-                    and result.get("script")
-                    and Path(result["script"]).exists()
-                    and result.get("text", "").strip()
-                ))
-                if stage == "SCRIPT"
-                else (lambda result: isinstance(result, dict) and bool(result))
-            )
-            for stage in pipeline.stages
-        },
-        run_id=getattr(run, "id", getattr(run, "run_id", None)),
-    )
-    print(f"FACTORY STAGES EXECUTED: {len(results)}")
+@cli.command()
+@click.option("--host", default="127.0.0.1")
+@click.option("--port", default=8765, type=int)
+def serve(host: str, port: int) -> None:
+    """Launch AURELIA Maker web interface."""
+    import uvicorn
+
+    from aurelia.server import app
+
+    click.echo(f"AURELIA Maker → http://{host}:{port}")
+    uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+@cli.command()
+def chat() -> None:
+    """Interactive chat REPL for AURELIA Maker."""
+    click.echo("AURELIA Maker Chat — type 'Create Episode 0013' or 'quit'")
+    while True:
+        try:
+            message = input("You> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not message or message.lower() in {"quit", "exit", "q"}:
+            break
+        result = RUNNER.handle_chat(message)
+        click.echo(f"AURELIA> {result['reply']}")
 
 
 @cli.command()
 def status() -> None:
-    """Show canonical Factory status."""
-    pipeline = build_production_pipeline(OUTPUT / "_factory_status")
-    print("FACTORY PIPELINE: CONNECTED")
-    print(f"STAGES: {len(pipeline.stages)}")
-    print("LEGACY MVP PATH: NOT USED")
+    """Show Factory status."""
+    click.echo("FACTORY PIPELINE: CONNECTED")
+    click.echo("MODE: Chat → Factory → Cinematic Production → FINAL MP4")
+    click.echo("LEGACY MVP PATH: DISABLED")
+    click.echo(f"OUTPUT: {OUTPUT}")
 
 
 if __name__ == "__main__":

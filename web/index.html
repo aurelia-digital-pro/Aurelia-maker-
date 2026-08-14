@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AURELIA Maker</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="brand">
+        <span class="logo">◈</span>
+        <div>
+          <h1>AURELIA Maker</h1>
+          <p>Chat → Factory → Cinematic Production → FINAL MP4</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="btn-new-episode" class="btn primary">+ New Episode</button>
+        <span id="factory-status" class="badge ok">Factory Connected</span>
+      </div>
+    </header>
+
+    <main class="main">
+      <aside class="sidebar">
+        <section>
+          <h2>Projects</h2>
+          <ul id="episode-list" class="episode-list"></ul>
+        </section>
+        <section>
+          <h2>Production Jobs</h2>
+          <ul id="job-list" class="job-list"></ul>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <div class="progress-panel" id="progress-panel" hidden>
+          <div class="progress-header">
+            <span id="progress-stage">—</span>
+            <span id="progress-pct">0%</span>
+          </div>
+          <div class="progress-bar"><div id="progress-fill"></div></div>
+        </div>
+
+        <div class="video-panel" id="video-panel" hidden>
+          <h2>Final MP4</h2>
+          <video id="final-video" controls></video>
+          <a id="download-link" class="btn" download>Download FINAL MP4</a>
+        </div>
+
+        <div class="chat-panel">
+          <div id="chat-messages" class="chat-messages"></div>
+          <form id="chat-form" class="chat-form">
+            <input
+              id="chat-input"
+              type="text"
+              placeholder="Create Episode 0013"
+              autocomplete="off"
+            />
+            <button type="submit" class="btn primary">Send</button>
+          </form>
+        </div>
+      </section>
+
+      <aside class="terminal-panel">
+        <h2>Factory Terminal</h2>
+        <pre id="terminal-output" class="terminal"></pre>
+      </aside>
+    </main>
+  </div>
+
+  <dialog id="episode-dialog">
+    <form method="dialog" id="episode-form">
+      <h3>Create Episode</h3>
+      <label>
+        Episode ID
+        <input id="episode-id-input" type="text" value="0013" pattern="\d{1,4}" required />
+      </label>
+      <label>
+        Profile
+        <select id="profile-input">
+          <option value="both">YouTube + TikTok</option>
+          <option value="youtube">YouTube</option>
+          <option value="tiktok">TikTok</option>
+        </select>
+      </label>
+      <div class="dialog-actions">
+        <button type="button" id="dialog-cancel" class="btn">Cancel</button>
+        <button type="submit" class="btn primary">Start Production</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

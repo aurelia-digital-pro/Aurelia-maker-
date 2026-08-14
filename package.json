@@ -1,9 +1,10 @@
 {
   "name": "aurelia-maker-ui",
-  "version": "0.1.0",
-  "description": "Small helper UI for Aurelia Maker (optional)",
+  "version": "1.0.0",
+  "description": "AURELIA Maker — Chat → Factory → FINAL MP4",
   "private": true,
   "scripts": {
-    "start": "echo 'UI optional �� MVP is CLI-first' && exit 0"
+    "start": "python -m aurelia.generate serve",
+    "produce": "python -m aurelia.generate generate --episode 0013 --profile both"
   }
 }

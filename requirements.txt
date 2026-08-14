@@ -1,6 +1,9 @@
-# Python requirements for Aurelia Maker MVP
+# Python requirements for AURELIA Maker
 pyttsx3==2.90
 pillow==10.0.0
 pydub==0.25.1
 numpy==1.26.2
 click==8.1.7
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+imageio-ffmpeg>=0.4.9

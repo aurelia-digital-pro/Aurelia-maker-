@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-import subprocess
 from typing import Any
 
 from PIL import Image, ImageEnhance, ImageFilter
+
+from .ffmpeg_util import run_ffmpeg
 
 
 class CinematicVisualEngine:
@@ -131,7 +132,6 @@ class CinematicVisualEngine:
         )
 
         command = [
-            "ffmpeg",
             "-y",
             "-hide_banner",
             "-loglevel",
@@ -160,7 +160,9 @@ class CinematicVisualEngine:
             str(output_path),
         ]
 
-        subprocess.run(command, check=True)
+        result = run_ffmpeg(command)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr)
         return output_path
 
     def _fit_canvas(self, image: Image.Image) -> Image.Image:

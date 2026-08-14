@@ -151,8 +151,8 @@ class ProductionPipeline:
             }
 
         def process_storyboard(data: dict) -> dict:
-            if not data.get("shot"):
-                raise ValueError("STORYBOARD requires SHOT output")
+            if not data.get("scene"):
+                raise ValueError("STORYBOARD requires SCENE output")
             return {
                 **data,
                 "stage": "STORYBOARD",

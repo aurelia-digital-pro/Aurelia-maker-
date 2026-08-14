@@ -1,4 +1,4 @@
-"""AURELIA Maker — Factory runner: canonical path from Chat/CLI to FINAL MP4."""
+﻿"""AURELIA Maker â€” Factory runner: canonical path from Chat/CLI to FINAL MP4."""
 
 from __future__ import annotations
 
@@ -73,27 +73,13 @@ class FactoryRunner:
         return None
 
     def default_script_path(self, episode_id: str) -> Path:
-        path = self.scripts / f"episode-{episode_id}.txt"
-        if path.exists():
-            return path
-        return self.scripts / "episode-0013.txt"
+        return self.scripts / f"episode-{episode_id}.txt"
 
     def ensure_episode_script(self, episode_id: str) -> Path:
-        path = self.scripts / f"episode-{episode_id}.txt"
-        if path.exists():
-            return path
-
-        template = self.scripts / "episode-0013.txt"
-        if template.exists() and episode_id != "0013":
-            path.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
-            return path
-
+        path = self.default_script_path(episode_id)
         if not path.exists():
-            path.write_text(
-                "AURELIA Maker introduction.\n\n"
-                "This episode demonstrates cinematic production.\n\n"
-                "Factory pipeline from script to final MP4.\n",
-                encoding="utf-8",
+            raise FileNotFoundError(
+                f"No script supplied for Episode {episode_id}: {path}"
             )
         return path
 
@@ -119,7 +105,7 @@ class FactoryRunner:
         script_path: Path,
         profile: str,
     ) -> None:
-        """Execute early Factory stages (SCRIPT → PRE_PRODUCTION) for provenance."""
+        """Execute early Factory stages (SCRIPT â†’ PRE_PRODUCTION) for provenance."""
         pipeline = build_production_pipeline(
             self.output / f"episode-{job.episode_id}" / "factory"
         )
@@ -169,7 +155,7 @@ class FactoryRunner:
         profile: str = "both",
     ) -> dict[str, Any]:
         self._set_stage(job, "PRODUCTION", 20.0)
-        self._log(job, f"[FACTORY] Starting cinematic production — Episode {job.episode_id}")
+        self._log(job, f"[FACTORY] Starting cinematic production â€” Episode {job.episode_id}")
 
         render_stages = [
             "SEQUENCE", "SCENE", "SHOT", "VISUAL", "CAMERA", "DEPTH", "MOTION",
@@ -248,52 +234,156 @@ class FactoryRunner:
                 job.error = str(exc)
                 self._log(job, f"[ERROR] {exc}")
 
-        thread = threading.Thread(target=worker, daemon=True)
+        thread = threading.Thread(target=worker, daemon=False)
         thread.start()
         return job
 
     def handle_chat(self, message: str) -> dict[str, Any]:
-        text = message.strip()
-        lowered = text.lower()
+        """
+        Canonical Chat -> Script -> Factory entry point.
 
-        if any(word in lowered for word in ("status", "progress", "حالة")):
-            active = [j for j in self.jobs.values() if j.status in {"RUNNING", "QUEUED"}]
+        Accepted message format:
+
+            Create Episode 0016
+            Profile: tiktok
+
+            Full episode script...
+
+        Profile is optional and defaults to both.
+        The script is persisted before Factory execution.
+        """
+        text = message.strip()
+        if not text:
+            return {
+                "reply": "Send an episode command followed by the complete script.",
+                "action": "await_script",
+            }
+
+        lowered = text.lower().strip()
+
+        # Status commands are exact commands only.
+        # This prevents words such as "status" inside a script
+        # from accidentally interrupting production.
+        if lowered in {"status", "progress", "state", "????"}:
+            active = [
+                j for j in self.jobs.values()
+                if j.status in {"RUNNING", "QUEUED"}
+            ]
+
             if not active:
                 return {
-                    "reply": "No active production. Say: Create Episode 0013",
+                    "reply": "No active production.",
                     "action": None,
                 }
+
             job = active[-1]
             return {
                 "reply": (
-                    f"Episode {job.episode_id}: {job.status} — "
+                    f"Episode {job.episode_id}: {job.status} ? "
                     f"Stage {job.stage} ({job.progress:.0f}%)"
                 ),
                 "action": None,
-                "job": job.job_id,
+                "job_id": job.job_id,
             }
 
         episode_id = self.resolve_episode_id(text)
-        if episode_id:
-            job = self.execute_async(episode_id)
+
+        if not episode_id:
             return {
                 "reply": (
-                    f"Production started for Episode {episode_id}. "
-                    f"Factory pipeline running → FINAL MP4."
+                    "AURELIA Maker ready. Use:\n\n"
+                    "Create Episode 0016\n"
+                    "Profile: tiktok\n\n"
+                    "Then paste the complete episode script."
                 ),
-                "action": "produce",
-                "job_id": job.job_id,
-                "episode_id": episode_id,
+                "action": "await_script",
             }
+
+        # --------------------------------------------------------
+        # Resolve requested production profile.
+        # --------------------------------------------------------
+        profile = "both"
+        profile_match = re.search(
+            r"(?:profile|mode)\s*[:=]\s*(youtube|tiktok|both)",
+            lowered,
+        )
+
+        if profile_match:
+            profile = profile_match.group(1)
+
+        # --------------------------------------------------------
+        # Extract script from the Chat message.
+        # --------------------------------------------------------
+        lines = text.splitlines()
+        script_lines: list[str] = []
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Ignore the command line containing the episode number.
+            if re.search(
+                r"(?:create|produce|make|generate|build)\s+episode\s+\d{1,4}",
+                stripped,
+                re.IGNORECASE,
+            ):
+                continue
+
+            # Ignore an explicit profile declaration.
+            if re.fullmatch(
+                r"(?:profile|mode)\s*[:=]\s*(?:youtube|tiktok|both)",
+                stripped,
+                re.IGNORECASE,
+            ):
+                continue
+
+            script_lines.append(line)
+
+        script_text = "\n".join(script_lines).strip()
+
+        script_path = self.default_script_path(episode_id)
+
+        # --------------------------------------------------------
+        # A production command without script does NOT fabricate
+        # content. The Chat waits for the real episode script.
+        # --------------------------------------------------------
+        if not script_text:
+            return {
+                "reply": (
+                    f"Episode {episode_id} is recognized. "
+                    f"Paste the complete script in the same Chat message. "
+                    f"Expected script file: {script_path}"
+                ),
+                "action": "await_script",
+                "episode_id": episode_id,
+                "profile": profile,
+            }
+
+        # --------------------------------------------------------
+        # Persist the exact script supplied through Chat.
+        # --------------------------------------------------------
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(script_text, encoding="utf-8")
+
+        # --------------------------------------------------------
+        # Launch the canonical Factory pipeline.
+        # --------------------------------------------------------
+        job = self.execute_async(
+            episode_id,
+            profile=profile,
+            script_path=script_path,
+        )
 
         return {
             "reply": (
-                "AURELIA Maker ready. Commands:\n"
-                "• Create Episode 0013\n"
-                "• Status\n"
-                "• Produce Episode 0001"
+                f"Episode {episode_id} accepted. "
+                f"Script saved. Profile: {profile}. "
+                f"Factory pipeline started ? FINAL MP4."
             ),
-            "action": None,
+            "action": "produce",
+            "job_id": job.job_id,
+            "episode_id": episode_id,
+            "profile": profile,
+            "script": str(script_path),
         }
 
 

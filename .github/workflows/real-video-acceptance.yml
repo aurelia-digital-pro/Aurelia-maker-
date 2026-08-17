@@ -54,6 +54,7 @@ jobs:
 
           test -s runs/acceptance/final.mp4
           test -s runs/acceptance/qc.json
+          test -d runs/acceptance/final_frames
 
       - name: Hard artifact QC
         run: |
@@ -68,6 +69,8 @@ jobs:
           assert qc['format'] and 'mp4' in qc['format']
           assert qc['canonical_path_verified'] is True
           assert qc['legacy_produce_episode_used'] is False
+          assert len(qc['representative_frames']) >= 5
+          assert len({frame['sha256'] for frame in qc['representative_frames']}) >= 2
           print('QC_ACCEPTED', qc['episode_id'], qc['sha256'])
           PY
 
@@ -78,5 +81,6 @@ jobs:
           path: |
             runs/acceptance/final.mp4
             runs/acceptance/qc.json
+            runs/acceptance/final_frames/*.png
             runs/acceptance/visuals/*.png
           retention-days: 14

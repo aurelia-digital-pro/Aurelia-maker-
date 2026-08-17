@@ -2,18 +2,24 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import shutil
 import subprocess
+
+
+def _voice_for(text: str) -> str:
+    return "ar" if re.search(r"[\u0600-\u06ff]", text) else "en"
 
 
 def synthesize_script(text: str, out_wav: Path) -> None:
     out_wav = Path(out_wav)
     out_wav.parent.mkdir(parents=True, exist_ok=True)
 
+    voice = _voice_for(text)
     espeak = shutil.which("espeak-ng") or shutil.which("espeak")
     if espeak:
         subprocess.run(
-            [espeak, "-s", "150", "-v", "en", "-w", str(out_wav), text],
+            [espeak, "-s", "150", "-v", voice, "-w", str(out_wav), text],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

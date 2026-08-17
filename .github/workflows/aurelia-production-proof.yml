@@ -1,0 +1,73 @@
+name: AURELIA Production Proof
+
+on:
+  push:
+    branches:
+      - aurelia/production-engine-local-ai
+  workflow_dispatch:
+
+jobs:
+  production-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system media and TTS dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg espeak-ng
+          ffmpeg -version | head -n 1
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run real Factory production
+        env:
+          AURELIA_IMAGE_STEPS: "2"
+          AURELIA_IMAGE_GUIDANCE: "7.0"
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: |
+          cat > /tmp/aurelia_proof_script.txt <<'TXT'
+          Scene 1: AURELIA opens on a silent desert horizon as the first light reveals an ancient human settlement beneath the stars.
+          Scene 2: The camera moves through a vast city of glass, stone, and light, showing how human knowledge transforms matter into civilization.
+          Scene 3: A lone observer stands above the city at dawn, confronting the question of what consciousness will do with the future it has created.
+          TXT
+
+          PYTHONUNBUFFERED=1 python - <<'PY'
+          from pathlib import Path
+          from aurelia.episode_engine import produce_episode
+
+          out = Path("output/proof")
+          result = produce_episode(
+              "9999",
+              "/tmp/aurelia_proof_script.txt",
+              out,
+              profile="youtube",
+              log=print,
+          )
+          print("FINAL_MP4", result["final_mp4"])
+          print("DURATION", result["duration"])
+          print("SCENES", result["scenes"])
+          PY
+
+      - name: Verify FINAL MP4
+        run: |
+          FINAL="output/proof/episode-9999/delivery/episode-9999-FINAL.mp4"
+          test -s "$FINAL"
+          ffprobe -v error -show_entries format=filename,duration,size -of default=noprint_wrappers=1 "$FINAL"
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height,r_frame_rate -of default=noprint_wrappers=1 "$FINAL"
+          test -s "output/proof/episode-9999/production_manifest.json"
+
+      - name: Upload FINAL MP4 and production manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: aurelia-final-mp4-proof
+          path: |
+            output/proof/episode-9999/delivery/episode-9999-FINAL.mp4
+            output/proof/episode-9999/production_manifest.json
+          if-no-files-found: error

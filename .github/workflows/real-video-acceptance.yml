@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       episode_id:
-        description: "Exact target episode id (for example 0013)"
+        description: "Exact target episode id (four digits)"
         required: true
         type: string
       script_path:

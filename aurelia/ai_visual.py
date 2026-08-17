@@ -62,16 +62,32 @@ def generate_scene_image(
     return output_path
 
 
+def _title_font(size: int):
+    """Return a Unicode-capable local font; keep a safe fallback for minimal runners."""
+    from PIL import ImageFont
+
+    candidates = (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    )
+    for candidate in candidates:
+        path = Path(candidate)
+        if path.exists():
+            return ImageFont.truetype(str(path), size=size)
+    return ImageFont.load_default()
+
+
 def generate_title_card(title: str, episode: str, output: str | Path, *, width: int = 512, height: int = 512) -> Path:
     """Generate a deterministic title card without replacing the AI scene backend."""
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
 
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image = Image.new("RGB", (width, height), (4, 6, 10))
     draw = ImageDraw.Draw(image)
-    font = ImageFont.load_default()
-    draw.text((width // 2, height // 2 - 12), title, fill=(201, 168, 106), anchor="mm", font=font)
-    draw.text((width // 2, height // 2 + 12), episode, fill=(220, 225, 232), anchor="mm", font=font)
+    title_font = _title_font(max(18, width // 24))
+    episode_font = _title_font(max(14, width // 32))
+    draw.text((width // 2, height // 2 - 18), title, fill=(201, 168, 106), anchor="mm", font=title_font)
+    draw.text((width // 2, height // 2 + 22), episode, fill=(220, 225, 232), anchor="mm", font=episode_font)
     image.save(output_path, format="PNG")
     return output_path

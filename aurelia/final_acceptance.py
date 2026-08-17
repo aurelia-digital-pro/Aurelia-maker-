@@ -18,7 +18,7 @@ def run_final_acceptance(output: str | Path = "runs/acceptance/final.mp4") -> di
     if tuple(pipeline.stages) != PRODUCTION_STAGES:
         raise RuntimeError("Canonical production stage contract mismatch")
 
-    from .real_video_acceptance import main as run_real_video_acceptance
+    from scripts.real_video_acceptance import main as run_real_video_acceptance
     import sys
 
     previous = list(sys.argv)

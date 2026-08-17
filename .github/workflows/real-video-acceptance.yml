@@ -1,9 +1,16 @@
 name: AURELIA Maker — Real Video Acceptance
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      episode_id:
+        description: "Exact target episode id (for example 0016)"
+        required: true
+        type: string
+      script_path:
+        description: "Exact path to the target episode script"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -11,7 +18,7 @@ permissions:
 jobs:
   real-video:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 300
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -34,7 +41,15 @@ jobs:
         env:
           HF_HUB_DISABLE_TELEMETRY: "1"
         run: |
-          PYTHONPATH=. python -m scripts.real_video_acceptance --output runs/acceptance/final.mp4
+          set -o pipefail
+          echo "[ACCEPTANCE] Target episode: ${{ inputs.episode_id }}"
+          echo "[ACCEPTANCE] Target script:  ${{ inputs.script_path }}"
+          timeout --foreground --signal=TERM --kill-after=60s 285m \
+            python -u -m scripts.real_video_acceptance \
+            --episode "${{ inputs.episode_id }}" \
+            --script "${{ inputs.script_path }}" \
+            --output runs/acceptance/final.mp4
+
           test -s runs/acceptance/final.mp4
           test -s runs/acceptance/qc.json
 
@@ -49,7 +64,7 @@ jobs:
           assert qc['duration_seconds'] >= 7
           assert qc['size_bytes'] >= 100000
           assert qc['format'] and 'mp4' in qc['format']
-          print('QC_ACCEPTED', qc['sha256'])
+          print('QC_ACCEPTED', qc['episode_id'], qc['sha256'])
           PY
 
       - name: Upload FINAL MP4 + QC proof

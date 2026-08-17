@@ -1,4 +1,4 @@
-"""Generate and verify a real AI-backed AURELIA MP4 end-to-end."""
+"""Generate and verify Episode 0013 through the canonical AURELIA Factory."""
 from __future__ import annotations
 
 import argparse
@@ -8,27 +8,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from aurelia.ai_visual import generate_scene_image
-from aurelia.tts import synthesize_script
+from aurelia.episode_engine import produce_episode
+from aurelia.media import validate_master
 
 
-SCENES = [
-    ("Landfall", "A lone AURELIA tower rises above a dark sea as dawn breaks, with mist moving through the architecture."),
-    ("Human Horizon", "A solitary observer stands before a vast luminous city while the first sunlight crosses the horizon."),
-]
-
-
-def run(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True)
-
-
-def narration(path: Path) -> None:
-    text = (
-        "AURELIA begins where observation becomes a question. "
-        "A city appears at the edge of the human horizon. "
-        "The machine does not merely assemble frames. It transforms a written intention into an image, motion, sound, and a finished film."
-    )
-    synthesize_script(text, path)
+SCRIPT = Path("scripts/episode-0013.txt")
 
 
 def main() -> None:
@@ -38,62 +22,65 @@ def main() -> None:
 
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
         raise RuntimeError("FFmpeg/ffprobe are required for real acceptance")
+    if not SCRIPT.exists():
+        raise RuntimeError(f"Missing Episode 0013 script: {SCRIPT}")
 
-    root = Path(args.output).resolve().parent
-    root.mkdir(parents=True, exist_ok=True)
-    visuals = root / "visuals"
-    visuals.mkdir(exist_ok=True)
-    audio = root / "narration.wav"
-    clips: list[Path] = []
-
-    for i, (title, description) in enumerate(SCENES):
-        image = generate_scene_image(i, title, description, visuals / f"scene_{i+1:02d}.png", width=512, height=512)
-        if not image.exists() or image.stat().st_size < 10_000:
-            raise RuntimeError(f"AI scene generation failed: {image}")
-        clip = root / f"clip_{i+1:02d}.mp4"
-        run([
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-loop", "1", "-i", str(image), "-t", "4",
-            "-vf", "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,zoompan=z='min(zoom+0.0012,1.12)':d=120:s=1280x720:fps=30,fade=t=in:st=0:d=0.5,fade=t=out:st=3.5:d=0.5",
-            "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip),
-        ])
-        clips.append(clip)
-
-    concat = root / "concat.txt"
-    concat.write_text("\n".join(f"file '{p.as_posix()}'" for p in clips) + "\n", encoding="utf-8")
-    silent = root / "picture_edit.mp4"
-    run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(silent)])
-
-    narration(audio)
     final = Path(args.output).resolve()
-    run([
-        "ffmpeg", "-y", "-loglevel", "error",
-        "-i", str(silent), "-i", str(audio),
-        "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
-        "-shortest", "-movflags", "+faststart", str(final),
-    ])
+    root = final.parent
+    root.mkdir(parents=True, exist_ok=True)
+    factory_root = root / "factory"
 
-    probe = subprocess.check_output([
-        "ffprobe", "-v", "error", "-show_entries", "format=duration,size,format_name", "-of", "json", str(final)
-    ], text=True)
+    result = produce_episode(
+        "0013",
+        SCRIPT,
+        factory_root,
+        profile="youtube",
+        log=lambda message: print(f"[FACTORY] {message}", flush=True),
+    )
+    produced = Path(result["final_mp4"]).resolve()
+    if not produced.exists() or produced.stat().st_size < 100_000:
+        raise RuntimeError(f"Factory did not produce a valid FINAL MP4: {produced}")
+
+    shutil.copy2(produced, final)
+
+    qc_result = validate_master(final, min_duration=30.0)
+    if not qc_result["passed"]:
+        raise RuntimeError(f"QC rejected Episode 0013: {qc_result}")
+
+    probe = subprocess.check_output(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration,size,format_name",
+            "-of", "json", str(final),
+        ],
+        text=True,
+    )
     metadata = json.loads(probe)["format"]
     duration = float(metadata["duration"])
     size = int(metadata["size"])
-    if duration < 7.0 or size < 100_000:
-        raise RuntimeError(f"QC rejected master: duration={duration}, size={size}")
-
     sha = hashlib.sha256(final.read_bytes()).hexdigest()
+
     qc = {
         "accepted": True,
+        "episode_id": "0013",
         "artifact": str(final),
         "sha256": sha,
         "duration_seconds": duration,
         "size_bytes": size,
         "format": metadata.get("format_name"),
+        "scenes": result.get("scenes"),
         "ai_visual_backend": "stable-diffusion-v1-5/stable-diffusion-v1-5",
-        "execution": "real_local_cpu_inference -> ffmpeg motion -> offline espeak-ng TTS -> final mp4",
+        "execution": "canonical_episode_engine -> local CPU Stable Diffusion -> cinematic FFmpeg motion -> offline espeak-ng TTS -> music -> subtitles -> color grade -> master encode -> QC",
+        "factory_output": str(produced),
+        "qc_checks": qc_result["checks"],
     }
     (root / "qc.json").write_text(json.dumps(qc, indent=2), encoding="utf-8")
+
+    visuals = produced.parent.parent.parent / "visuals"
+    acceptance_visuals = root / "visuals"
+    if visuals.exists():
+        shutil.copytree(visuals, acceptance_visuals, dirs_exist_ok=True)
+
     print(json.dumps(qc, indent=2))
 
 

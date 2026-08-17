@@ -40,14 +40,16 @@ jobs:
       - name: Generate real FINAL MP4 and QC
         env:
           HF_HUB_DISABLE_TELEMETRY: "1"
+          ACCEPTANCE_EPISODE_ID: ${{ inputs.episode_id }}
+          ACCEPTANCE_SCRIPT_PATH: ${{ inputs.script_path }}
         run: |
           set -o pipefail
-          echo "[ACCEPTANCE] Target episode: ${{ inputs.episode_id }}"
-          echo "[ACCEPTANCE] Target script:  ${{ inputs.script_path }}"
+          echo "[ACCEPTANCE] Target episode: ${ACCEPTANCE_EPISODE_ID}"
+          echo "[ACCEPTANCE] Target script:  ${ACCEPTANCE_SCRIPT_PATH}"
           timeout --foreground --signal=TERM --kill-after=60s 285m \
             python -u -m scripts.real_video_acceptance \
-            --episode "${{ inputs.episode_id }}" \
-            --script "${{ inputs.script_path }}" \
+            --episode "${ACCEPTANCE_EPISODE_ID}" \
+            --script "${ACCEPTANCE_SCRIPT_PATH}" \
             --output runs/acceptance/final.mp4
 
           test -s runs/acceptance/final.mp4

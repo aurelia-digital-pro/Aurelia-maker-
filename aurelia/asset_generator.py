@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import random
 from pathlib import Path
@@ -55,12 +56,14 @@ def _draw_glow_orb(
     return Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
 
 
-def _get_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+def _get_font(size: int) -> ImageFont.FreeTypeFont:
     candidates = [
         "C:/Windows/Fonts/segoeui.ttf",
         "C:/Windows/Fonts/arial.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
+        "DejaVuSans.ttf",
     ]
     for path in candidates:
         if Path(path).exists():
@@ -68,7 +71,9 @@ def _get_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
                 return ImageFont.truetype(path, size)
             except OSError:
                 continue
-    return ImageFont.load_default()
+    raise RuntimeError(
+        "No Unicode-capable TrueType font found. Install DejaVu Sans or Liberation Sans."
+    )
 
 
 PALETTES = [
@@ -81,6 +86,13 @@ PALETTES = [
 ]
 
 
+def _content_seed(scene_index: int, title: str, text: str) -> int:
+    """Derive deterministic visual variation from scene meaning, not position alone."""
+    payload = f"{title}\n{text}".strip().encode("utf-8")
+    digest = hashlib.sha256(payload).digest()
+    return int.from_bytes(digest[:8], "big") ^ (scene_index * 7919 + 42)
+
+
 def generate_scene_image(
     scene_index: int,
     title: str,
@@ -89,19 +101,25 @@ def generate_scene_image(
     width: int = 1920,
     height: int = 1080,
 ) -> Path:
-    """Generate a cinematic scene plate for production rendering."""
+    """Generate a cinematic scene plate for production rendering.
+
+    Visual variation is derived from the actual scene content. Scene narration is
+    intentionally not baked into the plate; subtitles are rendered downstream.
+    """
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    palette = PALETTES[scene_index % len(PALETTES)]
+    seed = _content_seed(scene_index, title, text)
+    palette = PALETTES[seed % len(PALETTES)]
     image = _gradient(width, height, palette["top"], palette["bottom"])
     draw = ImageDraw.Draw(image)
 
-    _draw_stars(draw, width, height, 180 + scene_index * 20, seed=scene_index * 7919 + 42)
+    _draw_stars(draw, width, height, 180 + (seed % 120), seed=seed)
 
-    cx = width // 2 + int(120 * math.sin(scene_index * 0.7))
-    cy = height // 2 + int(80 * math.cos(scene_index * 0.5))
-    image = _draw_glow_orb(image, cx, cy, 280 + scene_index * 15, palette["accent"])
+    cx = width // 2 + int(120 * math.sin(seed * 0.00017))
+    cy = height // 2 + int(80 * math.cos(seed * 0.00013))
+    radius = 240 + (seed % 120)
+    image = _draw_glow_orb(image, cx, cy, radius, palette["accent"])
 
     draw = ImageDraw.Draw(image)
 
@@ -109,20 +127,12 @@ def generate_scene_image(
         y = int(height * (0.15 + i * 0.02))
         draw.line(
             [(0, y), (width, y + 40)],
-            fill=(*palette["accent"], 30) if hasattr(draw, "fill") else palette["accent"],
+            fill=palette["accent"],
             width=1,
         )
 
-    title_font = _get_font(72)
-    body_font = _get_font(36)
-
-    display_title = title[:80] if title else f"Scene {scene_index + 1}"
-    draw.text((80, height - 280), display_title, fill=(255, 255, 255), font=title_font)
-
-    snippet = " ".join(text.split())[:120]
-    if snippet:
-        draw.text((80, height - 180), snippet + ("..." if len(text) > 120 else ""), fill=(200, 210, 230), font=body_font)
-
+    # No title/narration is baked into scene plates. The subtitle track is the
+    # single text layer for the rendered episode.
     badge = f"AURELIA MAKER  ·  SCENE {scene_index + 1:02d}"
     draw.text((80, 60), badge, fill=palette["accent"], font=_get_font(28))
 

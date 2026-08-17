@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .asset_generator import generate_scene_image, generate_title_card
+from .ai_visual import generate_scene_image, generate_title_card
 from .media import (
     apply_color_grade,
     burn_subtitles,
@@ -145,14 +145,7 @@ class EpisodeProduction:
             return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
         intro_text = f"AURELIA MAKER — Episode {self.episode_id}"
-        lines.extend(
-            [
-                str(cue_index),
-                f"{fmt(cursor)} --> {fmt(cursor + intro_duration)}",
-                intro_text,
-                "",
-            ]
-        )
+        lines.extend([str(cue_index), f"{fmt(cursor)} --> {fmt(cursor + intro_duration)}", intro_text, ""])
         cue_index += 1
         cursor += intro_duration
 
@@ -161,14 +154,7 @@ class EpisodeProduction:
             snippet = re.sub(r"\s+", " ", scene.text.strip())
             if len(snippet) > 160:
                 snippet = snippet[:157] + "..."
-            lines.extend(
-                [
-                    str(cue_index),
-                    f"{fmt(cursor)} --> {fmt(end)}",
-                    snippet,
-                    "",
-                ]
-            )
+            lines.extend([str(cue_index), f"{fmt(cursor)} --> {fmt(end)}", snippet, ""])
             cue_index += 1
             cursor = end
 
@@ -185,9 +171,7 @@ class EpisodeProduction:
 
         title_clip = self.dirs["shots"] / "00_title.mp4"
         engine.render_motion(
-            assets[0],
-            title_clip,
-            duration=8.0,
+            assets[0], title_clip, duration=8.0,
             camera={"movement": "push_in", "zoom_start": 1.0, "zoom_end": 1.12},
             lighting={"brightness": 1.05, "contrast": 1.08, "saturation": 1.1},
         )
@@ -197,14 +181,8 @@ class EpisodeProduction:
             out = self.dirs["shots"] / f"scene_{scene.index + 1:02d}.mp4"
             zoom_end = 1.14 if scene.movement == "push_in" else 0.92
             engine.render_motion(
-                asset,
-                out,
-                duration=scene.duration,
-                camera={
-                    "movement": scene.movement,
-                    "zoom_start": 1.0,
-                    "zoom_end": zoom_end,
-                },
+                asset, out, duration=scene.duration,
+                camera={"movement": scene.movement, "zoom_start": 1.0, "zoom_end": zoom_end},
                 depth={"depth_of_field": 0.6 if scene.index % 2 else 0.0},
                 lighting={
                     "brightness": 1.02 + (scene.index % 3) * 0.02,
@@ -218,25 +196,15 @@ class EpisodeProduction:
 
         return clips
 
-    def assemble_edit(
-        self,
-        clips: list[Path],
-        narration_path: Path,
-        music_path: Path,
-    ) -> Path:
+    def assemble_edit(self, clips: list[Path], narration_path: Path, music_path: Path) -> Path:
         self._emit("Editing — concatenating shots and mixing audio...")
         video_only = self.dirs["edit"] / "video_concat.mp4"
         concat_clips(clips, video_only)
-
         mixed = self.dirs["edit"] / "edit_mixed.mp4"
         mix_narration_and_music(video_only, narration_path, mixed, music_path)
         return mixed
 
-    def finish(
-        self,
-        edit_path: Path,
-        srt_path: Path,
-    ) -> dict[str, Path]:
+    def finish(self, edit_path: Path, srt_path: Path) -> dict[str, Path]:
         self._emit("Color grading...")
         graded = self.dirs["master"] / "graded.mp4"
         apply_color_grade(edit_path, graded)
@@ -248,7 +216,6 @@ class EpisodeProduction:
         self._emit("Mastering final encode...")
         final_youtube = self.dirs["delivery"] / f"episode-{self.episode_id}-youtube.mp4"
         master_encode(subtitled, final_youtube, profile="youtube")
-
         outputs = {"youtube": final_youtube}
 
         if self.profile in {"tiktok", "both"}:
@@ -256,14 +223,9 @@ class EpisodeProduction:
             master_encode(subtitled, final_tiktok, profile="tiktok")
             outputs["tiktok"] = final_tiktok
 
-        if self.profile == "both":
-            final_alias = self.dirs["delivery"] / f"episode-{self.episode_id}-FINAL.mp4"
-            final_alias.write_bytes(final_youtube.read_bytes())
-            outputs["final"] = final_alias
-        else:
-            final_alias = self.dirs["delivery"] / f"episode-{self.episode_id}-FINAL.mp4"
-            final_alias.write_bytes(final_youtube.read_bytes())
-            outputs["final"] = final_alias
+        final_alias = self.dirs["delivery"] / f"episode-{self.episode_id}-FINAL.mp4"
+        final_alias.write_bytes(final_youtube.read_bytes())
+        outputs["final"] = final_alias
 
         qc = validate_master(final_alias, min_duration=30.0)
         if not qc["passed"]:
@@ -276,11 +238,7 @@ class EpisodeProduction:
             "qc": qc,
             "timestamp": time.time(),
         }
-        (self.root / "production_manifest.json").write_text(
-            json.dumps(manifest, indent=2),
-            encoding="utf-8",
-        )
-
+        (self.root / "production_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         self._emit(f"FINAL MP4 ready: {final_alias}")
         return outputs
 
@@ -291,15 +249,12 @@ class EpisodeProduction:
         assets = self.generate_visual_assets()
         narration = self.synthesize_narration(script_text)
         srt = self.build_subtitles(narration)
-
         duration = max(probe_duration(narration), sum(s.duration for s in self.scenes) + 8.0)
         music_path = self.dirs["audio"] / "ambient_music.wav"
         generate_ambient_music(duration + 4.0, music_path)
-
         clips = self.render_shots(assets)
         edit = self.assemble_edit(clips, narration, music_path)
         outputs = self.finish(edit, srt)
-
         return {
             "episode_id": self.episode_id,
             "final_mp4": str(outputs["final"]),

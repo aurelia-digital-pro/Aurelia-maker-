@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       episode_id:
-        description: "Exact target episode id (for example 0016)"
+        description: "Exact target episode id (for example 0013)"
         required: true
         type: string
       script_path:
@@ -66,6 +66,8 @@ jobs:
           assert qc['duration_seconds'] >= 7
           assert qc['size_bytes'] >= 100000
           assert qc['format'] and 'mp4' in qc['format']
+          assert qc['canonical_path_verified'] is True
+          assert qc['legacy_produce_episode_used'] is False
           print('QC_ACCEPTED', qc['episode_id'], qc['sha256'])
           PY
 

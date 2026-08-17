@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .ai_visual import generate_scene_image, generate_title_card
+from .directing_engine import DirectingEngine
 from .media import (
     apply_color_grade,
     burn_subtitles,
@@ -34,6 +35,7 @@ class ScenePlan:
     text: str
     duration: float = 18.0
     movement: str = "push_in"
+    direction: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -61,6 +63,7 @@ class EpisodeProduction:
         }
         for path in self.dirs.values():
             path.mkdir(parents=True, exist_ok=True)
+        self.director = DirectingEngine()
 
     def _emit(self, message: str) -> None:
         self.log(message)
@@ -73,25 +76,36 @@ class EpisodeProduction:
 
     def build_scene_plan(self, script_text: str) -> list[ScenePlan]:
         raw = plan_scenes(script_text)
-        movements = ["push_in", "pull_out", "push_in", "static", "push_in", "pull_out"]
         scenes: list[ScenePlan] = []
 
         for index, scene in enumerate(raw):
+            scene_id = f"episode-{self.episode_id}:scene-{index + 1:03d}"
+            direction = self.director.direct(
+                scene_id=scene_id,
+                title=scene["title"],
+                text=scene["text"],
+                duration=18.0,
+            )
             scenes.append(
                 ScenePlan(
                     index=index,
                     title=scene["title"],
                     text=scene["text"],
                     duration=18.0,
-                    movement=movements[index % len(movements)],
+                    movement=direction["camera"]["movement"],
+                    direction=direction,
                 )
             )
+
+        if not scenes:
+            raise ValueError("No scenes could be planned from the supplied script")
 
         total = sum(scene.duration for scene in scenes) + 8.0
         if total > self.max_duration:
             scale = (self.max_duration - 8.0) / sum(scene.duration for scene in scenes)
             for scene in scenes:
                 scene.duration = max(8.0, round(scene.duration * scale, 1))
+                scene.direction["motion"]["duration"] = scene.duration
 
         self.scenes = scenes
         return scenes
@@ -165,7 +179,7 @@ class EpisodeProduction:
     def render_shots(self, assets: list[Path]) -> list[Path]:
         from .visuals import CinematicVisualEngine
 
-        self._emit("Rendering cinematic shots with camera motion...")
+        self._emit("Rendering cinematic shots with content-driven camera motion...")
         engine = CinematicVisualEngine()
         clips: list[Path] = []
 
@@ -179,18 +193,41 @@ class EpisodeProduction:
 
         for scene, asset in zip(self.scenes, assets[1:]):
             out = self.dirs["shots"] / f"scene_{scene.index + 1:02d}.mp4"
-            zoom_end = 1.14 if scene.movement == "push_in" else 0.92
+            direction = scene.direction
+            camera_plan = direction["camera"]
+            motion_plan = direction["motion"]
+            lighting_plan = direction["lighting"]
+            depth_plan = direction["depth"]
+
+            zoom_start = float(motion_plan.get("start", {}).get("zoom", 1.0))
+            zoom_end = float(motion_plan.get("end", {}).get("zoom", 1.08))
+            key = lighting_plan.get("key") or {}
+            fill = lighting_plan.get("fill") or {}
+            brightness = 1.0 + min(float(key.get("intensity", 0.7)) * 0.04, 0.06)
+            contrast = 1.04 + min(float(fill.get("intensity", 0.2)) * 0.04, 0.03)
+            saturation = 1.08 if direction["environment"] in {"space", "abstract"} else 1.04
+
             engine.render_motion(
-                asset, out, duration=scene.duration,
-                camera={"movement": scene.movement, "zoom_start": 1.0, "zoom_end": zoom_end},
-                depth={"depth_of_field": 0.6 if scene.index % 2 else 0.0},
-                lighting={
-                    "brightness": 1.02 + (scene.index % 3) * 0.02,
-                    "contrast": 1.06,
-                    "saturation": 1.12,
+                asset,
+                out,
+                duration=scene.duration,
+                camera={
+                    "movement": camera_plan["movement"],
+                    "zoom_start": zoom_start,
+                    "zoom_end": zoom_end,
                 },
-                atmosphere={"blur": 0.4 if scene.index % 4 == 0 else 0.0},
-                vfx={"blur": 0.2 if scene.index % 5 == 0 else 0.0},
+                depth={"depth_of_field": float(depth_plan.get("depth_of_field", 0.0))},
+                lighting={
+                    "brightness": brightness,
+                    "contrast": contrast,
+                    "saturation": saturation,
+                },
+                atmosphere={
+                    "blur": float((lighting_plan.get("atmosphere") or {}).get("haze", 0.0)) * 0.8,
+                },
+                vfx={
+                    "blur": float((lighting_plan.get("atmosphere") or {}).get("fog", 0.0)) * 0.4,
+                },
             )
             clips.append(out)
 
@@ -236,9 +273,10 @@ class EpisodeProduction:
             "duration": probe_duration(final_alias),
             "outputs": {key: str(path) for key, path in outputs.items()},
             "qc": qc,
+            "directing": [scene.direction for scene in self.scenes],
             "timestamp": time.time(),
         }
-        (self.root / "production_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        (self.root / "production_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
         self._emit(f"FINAL MP4 ready: {final_alias}")
         return outputs
 
@@ -281,4 +319,4 @@ def produce_episode(
     return production.produce()
 
 
-__all__ = ["EpisodeProduction", "produce_episode"]
+__all__ = ["EpisodeProduction", "produce_episode", "ScenePlan"]

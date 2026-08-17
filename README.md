@@ -13,8 +13,6 @@ Quick goals achieved by this MVP:
 - Transitions and final concat via ffmpeg
 - Outputs written to output/ as MP4 files for YouTube and TikTok
 
-This is an MVP focused on local execution, maximum automation, and no paid APIs.
-
 ## Installation
 
 ### Prerequisites
@@ -45,8 +43,10 @@ Or manually:
 
 ```bash
 export PYTHONPATH="$(pwd):$PYTHONPATH"
-python3 aurelia/generate.py generate --script scripts/example.txt --episode 0012 --profile both
+python3 aurelia/generate.py generate --script path/to/episode-script.txt --episode <EPISODE_ID> --profile both
 ```
+
+`<EPISODE_ID>` and the corresponding script are explicit production inputs. There is no default episode.
 
 ### Output Files
 
@@ -60,10 +60,10 @@ Generated files are saved to `output/episode-{EPISODE_ID}/`:
 
 ### Custom Script
 
-Create your own script file:
+Create your own episode script file and pass the matching episode id explicitly:
 
 ```bash
-python3 aurelia/generate.py generate --script path/to/your-script.txt --episode 0013 --profile both
+python3 aurelia/generate.py generate --script path/to/episode-script.txt --episode <EPISODE_ID> --profile both
 ```
 
 ### Chat Mode (Local Script Composition)

@@ -140,11 +140,8 @@ episodeForm.addEventListener("submit", async (e) => {
   if (result.job_id) trackJob(result.job_id);
 });
 
-addMessage(
-  "Welcome to AURELIA Maker.\nType: Create Episode 0013",
-  "bot"
-);
-
+// Deliberately no welcome/demo message. AURELIA Maker opens directly on the
+// production workspace; the user supplies the actual episode command/script.
 loadEpisodes();
 loadJobs();
 setInterval(loadJobs, 5000);

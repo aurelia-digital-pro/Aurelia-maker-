@@ -12,16 +12,16 @@ from pathlib import Path
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--episode", required=True, help="Exact episode id to accept, e.g. 0013")
+    parser.add_argument("--episode", required=True, help="Exact four-digit episode id to accept")
     parser.add_argument("--script", required=True, help="Path to the exact episode script to render")
     parser.add_argument("--output", default="runs/acceptance/final.mp4")
     args = parser.parse_args()
 
-    episode_id = args.episode.strip().zfill(4)
+    episode_id = args.episode.strip()
     if not episode_id.isdigit() or len(episode_id) != 4:
         raise RuntimeError("Episode id must be an explicit four-digit value")
 
-    SCRIPT = Path(args.script).resolve()
+    script = Path(args.script).resolve()
     final = Path(args.output).resolve()
     root = final.parent
     root.mkdir(parents=True, exist_ok=True)
@@ -33,16 +33,17 @@ def main() -> None:
 
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             raise RuntimeError("FFmpeg/ffprobe are required for real acceptance")
-        if not SCRIPT.exists():
-            raise RuntimeError(f"Missing selected episode script: {SCRIPT}")
+        if not script.exists():
+            raise RuntimeError(f"Missing selected episode script: {script}")
+
         expected_name = f"episode-{episode_id}.txt"
-        if SCRIPT.name != expected_name:
+        if script.name != expected_name:
             raise RuntimeError(
-                f"Episode/script mismatch: --episode {episode_id} requires a script named {expected_name}, got {SCRIPT.name}"
+                f"Episode/script mismatch: --episode {episode_id} requires a script named {expected_name}, got {script.name}"
             )
 
         factory = FactoryRunner(root / "factory")
-        job = factory.execute(episode_id, profile="youtube", script_path=SCRIPT)
+        job = factory.execute(episode_id, profile="youtube", script_path=script)
         if job.status != "COMPLETED":
             raise RuntimeError(f"Factory did not complete Episode {episode_id}: {job.status} — {job.error}")
 
@@ -85,7 +86,7 @@ def main() -> None:
         qc = {
             "accepted": True,
             "episode_id": episode_id,
-            "script": str(SCRIPT),
+            "script": str(script),
             "artifact": str(final),
             "sha256": sha,
             "duration_seconds": duration,
@@ -105,7 +106,7 @@ def main() -> None:
         if visuals.exists():
             shutil.copytree(visuals, acceptance_visuals, dirs_exist_ok=True)
         print(json.dumps(qc, indent=2))
-    except Exception as exc:
+    except Exception:
         error_file.write_text(traceback.format_exc(), encoding="utf-8")
         raise
 

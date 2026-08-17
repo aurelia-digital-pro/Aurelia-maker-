@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 from aurelia.ai_visual import generate_scene_image
+from aurelia.tts import synthesize_script
 
 
 SCENES = [
@@ -22,23 +23,12 @@ def run(cmd: list[str]) -> None:
 
 
 def narration(path: Path) -> None:
-    import pyttsx3
-
-    engine = pyttsx3.init()
-    voices = engine.getProperty("voices")
-    if voices:
-        engine.setProperty("voice", voices[0].id)
-    engine.setProperty("rate", 145)
-    engine.setProperty("volume", 1.0)
     text = (
         "AURELIA begins where observation becomes a question. "
         "A city appears at the edge of the human horizon. "
         "The machine does not merely assemble frames. It transforms a written intention into an image, motion, sound, and a finished film."
     )
-    engine.save_to_file(text, str(path))
-    engine.runAndWait()
-    if not path.exists() or path.stat().st_size == 0:
-        raise RuntimeError("Narration backend produced no audio artifact")
+    synthesize_script(text, path)
 
 
 def main() -> None:
@@ -101,7 +91,7 @@ def main() -> None:
         "size_bytes": size,
         "format": metadata.get("format_name"),
         "ai_visual_backend": "stable-diffusion-v1-5/stable-diffusion-v1-5",
-        "execution": "real_local_cpu_inference -> ffmpeg motion -> narration -> final mp4",
+        "execution": "real_local_cpu_inference -> ffmpeg motion -> offline espeak-ng TTS -> final mp4",
     }
     (root / "qc.json").write_text(json.dumps(qc, indent=2), encoding="utf-8")
     print(json.dumps(qc, indent=2))

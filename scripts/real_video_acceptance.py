@@ -1,4 +1,4 @@
-"""Generate and verify Episode 0013 through the canonical AURELIA Factory."""
+"""Generate and verify one explicitly selected episode through the AURELIA Factory."""
 from __future__ import annotations
 
 import argparse
@@ -10,14 +10,18 @@ import traceback
 from pathlib import Path
 
 
-SCRIPT = Path("scripts/episode-0013.txt")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--episode", required=True, help="Exact episode id to accept, e.g. 0016")
+    parser.add_argument("--script", required=True, help="Path to the exact episode script to render")
     parser.add_argument("--output", default="runs/acceptance/final.mp4")
     args = parser.parse_args()
 
+    episode_id = args.episode.strip()
+    if not episode_id:
+        raise RuntimeError("Episode id is required; refusing to generate an unspecified episode")
+
+    SCRIPT = Path(args.script)
     final = Path(args.output).resolve()
     root = final.parent
     root.mkdir(parents=True, exist_ok=True)
@@ -30,11 +34,11 @@ def main() -> None:
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             raise RuntimeError("FFmpeg/ffprobe are required for real acceptance")
         if not SCRIPT.exists():
-            raise RuntimeError(f"Missing Episode 0013 script: {SCRIPT}")
+            raise RuntimeError(f"Missing selected episode script: {SCRIPT}")
 
         factory_root = root / "factory"
         result = produce_episode(
-            "0013",
+            episode_id,
             SCRIPT,
             factory_root,
             profile="youtube",
@@ -47,7 +51,7 @@ def main() -> None:
         shutil.copy2(produced, final)
         qc_result = validate_master(final, min_duration=30.0)
         if not qc_result["passed"]:
-            raise RuntimeError(f"QC rejected Episode 0013: {qc_result}")
+            raise RuntimeError(f"QC rejected Episode {episode_id}: {qc_result}")
 
         probe = subprocess.check_output(
             [
@@ -64,7 +68,8 @@ def main() -> None:
 
         qc = {
             "accepted": True,
-            "episode_id": "0013",
+            "episode_id": episode_id,
+            "script": str(SCRIPT),
             "artifact": str(final),
             "sha256": sha,
             "duration_seconds": duration,

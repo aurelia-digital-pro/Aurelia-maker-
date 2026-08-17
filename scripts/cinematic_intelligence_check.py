@@ -9,21 +9,37 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 from aurelia.ai_visual import build_scene_prompt
 from aurelia.directing_engine import DirectingEngine
 from aurelia.planner import plan_scenes
 
 
+def without_identity(value: Any) -> Any:
+    """Recursively remove identity-only shot IDs from nested directing plans."""
+    if isinstance(value, dict):
+        return {
+            key: without_identity(item)
+            for key, item in value.items()
+            if key != "shot_id"
+        }
+    if isinstance(value, list):
+        return [without_identity(item) for item in value]
+    return value
+
+
 def normalized(plan: dict) -> dict:
-    """Remove identity-only fields so reverse tests compare decisions, not IDs."""
-    return {
-        "environment": plan["environment"],
-        "camera": {k: v for k, v in plan["camera"].items() if k != "shot_id"},
-        "depth": {k: v for k, v in plan["depth"].items() if k != "shot_id"},
-        "motion": {k: v for k, v in plan["motion"].items() if k != "shot_id"},
-        "lighting": {k: v for k, v in plan["lighting"].items() if k != "shot_id"},
-    }
+    """Compare cinematic decisions, not scene identity fields."""
+    return without_identity(
+        {
+            "environment": plan["environment"],
+            "camera": plan["camera"],
+            "depth": plan["depth"],
+            "motion": plan["motion"],
+            "lighting": plan["lighting"],
+        }
+    )
 
 
 def main() -> None:
@@ -49,7 +65,6 @@ def main() -> None:
         decisions.append(normalized(decision))
         prompts.append(build_scene_prompt(scene["title"], scene["text"], decision))
 
-    # A real script must produce semantic information in the directing path.
     if not any(item["environment"] != "abstract" for item in decisions):
         raise SystemExit("No semantic environment was derived from the real episode")
 
@@ -65,7 +80,8 @@ def main() -> None:
         raise SystemExit("Content perturbation failed: visual prompts are identical")
 
     # Reverse test: same semantic content at different scene IDs must retain
-    # the same cinematic decisions once identity fields are removed.
+    # the same cinematic decisions once identity fields are removed, including
+    # nested shot_id values such as LightingPlan.atmosphere.shot_id.
     reverse_a = director.direct("episode:scene:001", base["title"], base["text"], 18.0)
     reverse_b = director.direct("episode:scene:099", base["title"], base["text"], 18.0)
     if normalized(reverse_a) != normalized(reverse_b):

@@ -363,7 +363,8 @@ class FactoryRunner:
             try:
                 script = script_path or self.ensure_episode_script(job.episode_id)
                 self.run_factory_metadata(job, script, profile)
-                self.run_episode_production(job, script, profile)
+                result = self.run_episode_production(job, script, profile)
+                job.metadata["result"] = result
             except Exception as exc:
                 job.status = "FAILED"
                 job.error = str(exc)
@@ -378,6 +379,7 @@ class FactoryRunner:
         if not text:
             return {"reply": "Send an episode command followed by the complete script.", "action": "await_script"}
         lowered = text.lower().strip()
+
         if lowered in {"status", "progress", "state", "????"}:
             active = [j for j in self.jobs.values() if j.status in {"RUNNING", "QUEUED"}]
             if not active:
@@ -387,7 +389,7 @@ class FactoryRunner:
 
         episode_id = self.resolve_episode_id(text)
         if not episode_id:
-            return {"reply": "AURELIA Maker ready. Use:\n\nCreate Episode 0016\nProfile: tiktok\n\nThen paste the complete episode script.", "action": "await_script"}
+            return {"reply": "AURELIA Maker ready. Use: Create Episode <ID>, then provide the complete episode script.", "action": "await_script"}
 
         profile = "both"
         profile_match = re.search(r"(?:profile|mode)\s*[:=]\s*(youtube|tiktok|both)", lowered)

@@ -10,6 +10,32 @@ import traceback
 from pathlib import Path
 
 
+def _extract_representative_frames(video: Path, output_dir: Path, count: int = 5) -> list[dict[str, object]]:
+    """Extract evenly spaced frames from the final MP4 for visual evidence."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    probe = subprocess.check_output(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(video)],
+        text=True,
+    ).strip()
+    duration = float(probe)
+    evidence: list[dict[str, object]] = []
+    for index in range(count):
+        timestamp = duration * ((index + 0.5) / count)
+        frame = output_dir / f"final-frame-{index + 1:02d}.png"
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{timestamp:.3f}", "-i", str(video), "-frames:v", "1", str(frame)],
+            check=True,
+        )
+        evidence.append({
+            "frame": str(frame),
+            "timestamp_seconds": round(timestamp, 3),
+            "sha256": hashlib.sha256(frame.read_bytes()).hexdigest(),
+        })
+    if len({item["sha256"] for item in evidence}) < 2:
+        raise RuntimeError("Representative final-video frames are unexpectedly identical")
+    return evidence
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--episode", required=True, help="Exact four-digit episode id to accept")
@@ -63,11 +89,7 @@ def main() -> None:
             raise RuntimeError(f"QC rejected Episode {episode_id}: {qc_result}")
 
         probe = subprocess.check_output(
-            [
-                "ffprobe", "-v", "error",
-                "-show_entries", "format=duration,size,format_name",
-                "-of", "json", str(final),
-            ],
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration,size,format_name", "-of", "json", str(final)],
             text=True,
         )
         metadata = json.loads(probe)["format"]
@@ -83,6 +105,7 @@ def main() -> None:
         if manifest.get("episode_id") != episode_id:
             raise RuntimeError("Factory manifest episode id does not match the explicit acceptance target")
 
+        frame_evidence = _extract_representative_frames(final, root / "final_frames")
         qc = {
             "accepted": True,
             "episode_id": episode_id,
@@ -98,6 +121,7 @@ def main() -> None:
             "canonical_path_verified": True,
             "legacy_produce_episode_used": False,
             "qc_checks": qc_result["checks"],
+            "representative_frames": frame_evidence,
         }
         (root / "qc.json").write_text(json.dumps(qc, indent=2, ensure_ascii=False), encoding="utf-8")
 

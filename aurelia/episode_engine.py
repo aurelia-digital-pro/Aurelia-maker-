@@ -124,7 +124,13 @@ class EpisodeProduction:
 
         for scene in self.scenes:
             path = self.dirs["visuals"] / f"scene_{scene.index + 1:02d}.png"
-            generate_scene_image(scene.index, scene.title, scene.text, path)
+            generate_scene_image(
+                scene.index,
+                scene.title,
+                scene.text,
+                path,
+                direction=scene.direction,
+            )
             assets.append(path)
 
         return assets

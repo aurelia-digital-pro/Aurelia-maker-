@@ -1,0 +1,43 @@
+name: AURELIA Maker — Cinematic Intelligence
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      script_path:
+        description: "Real repository episode script to inspect"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  cinematic-intelligence:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Select real episode script
+        id: script
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.script_path }}" ]; then
+            SCRIPT="${{ inputs.script_path }}"
+          else
+            SCRIPT="$(find scripts -maxdepth 1 -type f -name 'episode-*.txt' | sort | head -n 1)"
+          fi
+          test -n "$SCRIPT"
+          test -s "$SCRIPT"
+          echo "path=$SCRIPT" >> "$GITHUB_OUTPUT"
+          echo "Using real episode script: $SCRIPT"
+
+      - name: Run content perturbation and reverse tests
+        run: python -u scripts/cinematic_intelligence_check.py --script "${{ steps.script.outputs.path }}"

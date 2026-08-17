@@ -141,7 +141,7 @@ episodeForm.addEventListener("submit", async (e) => {
 });
 
 addMessage(
-  "Welcome to AURELIA Maker.\nType: Create Episode 0013",
+  "Welcome to AURELIA Maker.\nEnter an episode request such as: Create Episode <ID>",
   "bot"
 );
 

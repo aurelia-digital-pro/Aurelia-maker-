@@ -1,0 +1,63 @@
+name: AURELIA Maker — Real Video Acceptance
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: System media dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg espeak-ng
+
+      - name: Install CPU AI stack
+        run: python -m pip install -r requirements.txt
+
+      - name: Generate real FINAL MP4 and QC
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: |
+          PYTHONPATH=. python -m scripts.real_video_acceptance --output runs/acceptance/final.mp4
+          test -s runs/acceptance/final.mp4
+          test -s runs/acceptance/qc.json
+
+      - name: Hard artifact QC
+        run: |
+          ffprobe -v error -show_entries format=duration,size,format_name -of json runs/acceptance/final.mp4
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          qc=json.loads(Path('runs/acceptance/qc.json').read_text())
+          assert qc['accepted'] is True
+          assert qc['duration_seconds'] >= 7
+          assert qc['size_bytes'] >= 100000
+          assert qc['format'] and 'mp4' in qc['format']
+          print('QC_ACCEPTED', qc['sha256'])
+          PY
+
+      - name: Upload FINAL MP4 + QC proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: AURELIA-FINAL-MP4-QC
+          path: |
+            runs/acceptance/final.mp4
+            runs/acceptance/qc.json
+            runs/acceptance/visuals/*.png
+          retention-days: 14

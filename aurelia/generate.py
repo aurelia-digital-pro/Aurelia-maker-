@@ -24,7 +24,7 @@ def cli():
 
 @cli.command()
 @click.option("--script", type=click.Path(exists=True, dir_okay=False))
-@click.option("--episode", required=True)
+@click.option("--episode", required=True, help="Explicit episode id to produce")
 @click.option(
     "--profile",
     default="both",
@@ -32,12 +32,16 @@ def cli():
 )
 def generate(script: str | None, episode: str, profile: str) -> None:
     """Execute production through the canonical Factory pipeline."""
-    script_path = Path(script) if script else RUNNER.ensure_episode_script(episode.zfill(4))
-    click.echo(f"FACTORY: Episode {episode.zfill(4)}")
+    episode_id = episode.strip().zfill(4)
+    if not episode_id.isdigit() or len(episode_id) != 4:
+        raise click.ClickException("Episode id must be an explicit four-digit value")
+
+    script_path = Path(script) if script else RUNNER.ensure_episode_script(episode_id)
+    click.echo(f"FACTORY: Episode {episode_id}")
     click.echo(f"SCRIPT: {script_path}")
     click.echo("PRODUCTION MODE: FACTORY → FINAL MP4")
 
-    job = RUNNER.execute(episode.zfill(4), profile=profile, script_path=script_path)
+    job = RUNNER.execute(episode_id, profile=profile, script_path=script_path)
     click.echo(f"STATUS: {job.status}")
     click.echo(f"FINAL MP4: {job.final_mp4}")
 
@@ -58,7 +62,7 @@ def serve(host: str, port: int) -> None:
 @cli.command()
 def chat() -> None:
     """Interactive chat REPL for AURELIA Maker."""
-    click.echo("AURELIA Maker Chat — type 'Create Episode 0013' or 'quit'")
+    click.echo("AURELIA Maker Chat — enter a request such as 'Create Episode <ID>' or 'quit'")
     while True:
         try:
             message = input("You> ").strip()

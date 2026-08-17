@@ -1,8 +1,8 @@
 """Real local text-to-image backend for AURELIA Maker."""
 from __future__ import annotations
 
-from pathlib import Path
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 
@@ -36,27 +36,8 @@ def _plan_value(plan: dict[str, Any], *keys: str, default: Any = "") -> Any:
     return default
 
 
-def generate_scene_image(
-    scene_index: int,
-    title: str,
-    description: str,
-    output: str | Path,
-    *,
-    direction: dict[str, Any] | None = None,
-    width: int = 512,
-    height: int = 512,
-) -> Path:
-    """Generate a local AI image from scene content plus its semantic directing plan.
-
-    ``scene_index`` is retained for API compatibility only. It is deliberately
-    excluded from both the prompt and the random seed so that visual identity
-    cannot be selected by scene position.
-    """
-    import torch
-
-    output_path = Path(output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
+def build_scene_prompt(title: str, description: str, direction: dict[str, Any] | None = None) -> str:
+    """Build the exact semantic prompt consumed by the local image model."""
     direction = direction or {}
     environment = str(direction.get("environment", "abstract"))
     camera = direction.get("camera") or {}
@@ -79,7 +60,7 @@ def generate_scene_image(
     haze = _plan_value(atmosphere, "haze", default=0.0)
     dust = _plan_value(atmosphere, "dust", default=0.0)
 
-    prompt = (
+    return (
         "cinematic documentary still, AURELIA visual language, "
         "photorealistic, coherent physical environment, natural subject placement, "
         "deep blacks, subtle gold and blue accents, no text, no watermark, no logo, "
@@ -90,29 +71,62 @@ def generate_scene_image(
         f"lighting: key {key_color}, fill {fill_color}, rim {rim_color}, "
         f"atmosphere: fog {fog}, haze {haze}, dust {dust}"
     )
-    negative = "text, subtitles, narration, watermark, logo, UI, low quality, blurry, distorted, duplicate subjects"
 
-    # Content, not scene position, determines the deterministic seed. This
-    # keeps identical content stable while preventing index-based templates.
+
+def _content_seed(title: str, description: str, direction: dict[str, Any] | None = None) -> int:
+    """Derive a stable seed from semantic content, never from scene position."""
+    direction = direction or {}
+    camera = direction.get("camera") or {}
+    depth = direction.get("depth") or {}
+    motion = direction.get("motion") or {}
+    lighting = direction.get("lighting") or {}
+    atmosphere = lighting.get("atmosphere") or {}
+    key = lighting.get("key") or {}
+    fill = lighting.get("fill") or {}
+    rim = lighting.get("rim") or {}
     seed_material = "|".join(
         [
-            environment,
+            str(direction.get("environment", "abstract")),
             title.strip(),
             description.strip(),
-            str(lens),
-            str(framing),
-            str(movement),
-            str(dof),
-            str(key_color),
-            str(fill_color),
-            str(rim_color),
-            str(fog),
-            str(haze),
-            str(dust),
+            str(_plan_value(camera, "lens_mm", default=35.0)),
+            str(_plan_value(camera, "framing", default="cinematic")),
+            str(_plan_value(motion, "type", default=_plan_value(camera, "movement", default="static"))),
+            str(_plan_value(depth, "depth_of_field", default=0.0)),
+            str(_plan_value(key, "color", default="neutral")),
+            str(_plan_value(fill, "color", default="neutral")),
+            str(_plan_value(rim, "color", default="neutral")),
+            str(_plan_value(atmosphere, "fog", default=0.0)),
+            str(_plan_value(atmosphere, "haze", default=0.0)),
+            str(_plan_value(atmosphere, "dust", default=0.0)),
         ]
     )
-    seed = sum((position + 1) * ord(char) for position, char in enumerate(seed_material)) % (2**31 - 1)
-    generator = torch.Generator(device="cpu").manual_seed(seed)
+    return sum((position + 1) * ord(char) for position, char in enumerate(seed_material)) % (2**31 - 1)
+
+
+def generate_scene_image(
+    scene_index: int,
+    title: str,
+    description: str,
+    output: str | Path,
+    *,
+    direction: dict[str, Any] | None = None,
+    width: int = 512,
+    height: int = 512,
+) -> Path:
+    """Generate a local AI image from scene content plus its semantic directing plan.
+
+    ``scene_index`` is retained for API compatibility only. It is deliberately
+    excluded from the prompt and random seed so visual identity cannot be
+    selected by scene position.
+    """
+    import torch
+
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt = build_scene_prompt(title, description, direction)
+    negative = "text, subtitles, narration, watermark, logo, UI, low quality, blurry, distorted, duplicate subjects"
+    generator = torch.Generator(device="cpu").manual_seed(_content_seed(title, description, direction))
 
     image = get_pipeline()(
         prompt=prompt,

@@ -29,10 +29,11 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: System media dependencies
+      - name: System media and font dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg espeak-ng
+          sudo apt-get install -y -qq ffmpeg espeak-ng fonts-dejavu fontconfig
+          fc-match -f '%{file}\n' 'sans:lang=ar' | head -n 1
 
       - name: Install CPU AI stack
         run: python -m pip install -r requirements.txt

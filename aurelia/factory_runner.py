@@ -77,7 +77,9 @@ class FactoryRunner:
         assets: list[Path] = []; narration: Path | None = None; subtitles: Path | None = None; music: Path | None = None; edit: Path | None = None; graded: Path | None = None; subtitled: Path | None = None; final_outputs: dict[str, Path] = {}
         def passthrough(data, stage): return {**data, "stage": stage}
         def script_processor(data): return {**data, "stage": "SCRIPT", "text": production.load_script()}
-        def sequence_processor(data): return {**data, "stage": "SEQUENCE", "scenes": production.build_scene_plan(data["text"])}
+        def sequence_processor(data):
+            production.build_scene_plan(data["text"])
+            return {**data, "stage": "SEQUENCE", "scene_count": len(production.scenes)}
         def scene_processor(data): return {**data, "stage": "SCENE", "scene_count": len(production.scenes)}
         def shot_processor(data): return {**data, "stage": "SHOT", "shots": [scene.direction for scene in production.scenes]}
         def visual_processor(data):
@@ -125,7 +127,7 @@ class FactoryRunner:
             return {**data, "stage": "DELIVERY", "artifact": str(alias)}
         processors = {"SCRIPT": script_processor, "DEVELOPMENT": lambda d: passthrough(d,"DEVELOPMENT"), "STORY": lambda d: passthrough(d,"STORY"), "WORLD": lambda d: passthrough(d,"WORLD"), "CHARACTER": lambda d: passthrough(d,"CHARACTER"), "SERIES_BIBLE": lambda d: passthrough(d,"SERIES_BIBLE"), "RESEARCH": lambda d: passthrough(d,"RESEARCH"), "PRE_PRODUCTION": lambda d: passthrough(d,"PRE_PRODUCTION"), "SEQUENCE": sequence_processor, "SCENE": scene_processor, "SHOT": shot_processor, "STORYBOARD": lambda d: passthrough(d,"STORYBOARD"), "ANIMATIC": lambda d: passthrough(d,"ANIMATIC"), "VISUAL": visual_processor, "ASSET": asset_processor, "CAMERA": camera_processor, "DEPTH": depth_processor, "MOTION": motion_processor, "LIGHT": light_processor, "ATMOSPHERE": lambda d: passthrough(d,"ATMOSPHERE"), "VFX": lambda d: passthrough(d,"VFX"), "NARRATION": narration_processor, "DIALOGUE": lambda d: passthrough(d,"DIALOGUE"), "SOUND": lambda d: passthrough(d,"SOUND"), "MUSIC": music_processor, "AUDIO": lambda d: passthrough(d,"AUDIO"), "EDIT": edit_processor, "COLOR": color_processor, "SUBTITLE": subtitle_processor, "MASTER": master_processor, "QC": qc_processor, "DELIVERY": delivery_processor}
         validators = {stage: (lambda result: isinstance(result, dict) and bool(result)) for stage in PRODUCTION_STAGES}
-        results = pipeline.execute_production(project=f"episode-{job.episode_id}", input_data=state, processors=processors, validators=validators, run_id=job.metadata.get("run_id"))
+        pipeline.execute_production(project=f"episode-{job.episode_id}", input_data=state, processors=processors, validators=validators, run_id=job.metadata.get("run_id"))
         if "final" not in final_outputs: raise RuntimeError("Canonical pipeline completed without FINAL MP4")
         job.final_mp4 = str(final_outputs["final"]); job.status = "COMPLETED"; job.progress = 100.0; job.stage = "DELIVERY"; self._log(job, f"[FACTORY] FINAL MP4: {job.final_mp4}")
         return {"episode_id": job.episode_id, "final_mp4": job.final_mp4, "outputs": {k: str(v) for k,v in final_outputs.items()}, "scenes": len(production.scenes)}

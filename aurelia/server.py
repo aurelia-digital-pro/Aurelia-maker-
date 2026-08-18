@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from aurelia.chat_entry import handle_chat_production
 from aurelia.factory_runner import FactoryRunner
 
 WEB = ROOT / "web"
@@ -93,7 +94,7 @@ def get_job(job_id: str):
 
 @app.post("/api/chat")
 def chat(req: ChatRequest):
-    return runner.handle_chat(req.message)
+    return handle_chat_production(runner, req.message)
 
 
 @app.get("/api/video/{episode_id}")

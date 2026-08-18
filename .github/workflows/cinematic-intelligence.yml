@@ -14,9 +14,6 @@ permissions:
 env:
   PYTHONPATH: ${{ github.workspace }}
 
-env:
-  PYTHONPATH: ${{ github.workspace }}
-
 jobs:
   cinematic-intelligence:
     runs-on: ubuntu-latest

@@ -1,0 +1,6 @@
+TITLE: Acceptance Episode 0013 — Real Factory Proof
+
+NARRATOR:
+This is the AURELIA Maker real production acceptance test. The episode is supplied directly as the selected Chat production source. The Factory must transform this source into a complete cinematic video using local deterministic visual generation, offline narration, real camera motion, music, subtitles, mastering, quality control, and final delivery.
+
+The purpose of this episode is not to demonstrate a mock pipeline. Every stage must create or consume a real production artifact. The final result must be a playable MP4 containing both video and narration audio, with a valid duration and multiple distinct visual frames.

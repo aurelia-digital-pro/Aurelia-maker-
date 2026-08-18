@@ -1,17 +1,18 @@
 name: AURELIA Maker — Cinematic Intelligence
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       script_path:
-        description: "Real repository episode script to inspect"
+        description: "Exact repository script supplied for this validation run"
         required: true
         type: string
 
 permissions:
   contents: read
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
 
 env:
   PYTHONPATH: ${{ github.workspace }}
@@ -28,19 +29,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Select real episode script
+      - name: Select explicitly supplied script
         id: script
         shell: bash
         run: |
-          if [ -n "${{ inputs.script_path }}" ]; then
-            SCRIPT="${{ inputs.script_path }}"
-          else
-            SCRIPT="$(find scripts -maxdepth 1 -type f -name 'episode-*.txt' | sort | head -n 1)"
-          fi
+          SCRIPT="${{ inputs.script_path }}"
           test -n "$SCRIPT"
           test -s "$SCRIPT"
           echo "path=$SCRIPT" >> "$GITHUB_OUTPUT"
-          echo "Using real episode script: $SCRIPT"
+          echo "Using explicitly supplied episode script: $SCRIPT"
 
       - name: Run content perturbation and reverse tests
         run: python -u scripts/cinematic_intelligence_check.py --script "${{ steps.script.outputs.path }}"

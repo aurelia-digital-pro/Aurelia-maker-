@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - repair/final-real-video-10-stage
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       episode_id:
@@ -175,11 +179,11 @@ jobs:
       - name: "10/10 — FINAL RELEASE GATE"
         run: |
           python - <<'PY'
-          import json
+          import json, os
           from pathlib import Path
           qc=json.loads(Path('runs/acceptance/qc.json').read_text())
           assert qc['accepted'] is True
-          assert qc['episode_id'] == '${{ env.EPISODE_ID }}'
+          assert qc['episode_id'] == os.environ['EPISODE_ID']
           assert qc['size_bytes'] >= 100000
           assert qc['duration_seconds'] >= 7
           assert len(qc['representative_frames']) >= 5

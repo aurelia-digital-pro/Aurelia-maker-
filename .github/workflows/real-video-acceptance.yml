@@ -1,8 +1,6 @@
 name: AURELIA Maker — Real Video Acceptance
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       episode_id:
@@ -40,35 +38,15 @@ jobs:
       - name: Install CPU AI stack
         run: python -m pip install -r requirements.txt
 
-      - name: Resolve acceptance target
-        id: target
-        env:
-          INPUT_EPISODE_ID: ${{ inputs.episode_id }}
-          INPUT_SCRIPT_PATH: ${{ inputs.script_path }}
-        run: |
-          set -euo pipefail
-          if [ -n "${INPUT_EPISODE_ID}" ] || [ -n "${INPUT_SCRIPT_PATH}" ]; then
-            test -n "${INPUT_EPISODE_ID}"
-            test -n "${INPUT_SCRIPT_PATH}"
-            episode_id="${INPUT_EPISODE_ID}"
-            script_path="${INPUT_SCRIPT_PATH}"
-          else
-            script_path="$(find scripts -maxdepth 1 -type f -name 'episode-*.txt' -print | sort | head -n 1)"
-            test -n "${script_path}"
-            episode_id="$(basename "${script_path}" .txt | sed 's/^episode-//')"
-          fi
-          echo "episode_id=${episode_id}" >> "${GITHUB_OUTPUT}"
-          echo "script_path=${script_path}" >> "${GITHUB_OUTPUT}"
-          echo "[ACCEPTANCE] Target episode: ${episode_id}"
-          echo "[ACCEPTANCE] Target script:  ${script_path}"
-
       - name: Generate real FINAL MP4 and QC
         env:
           HF_HUB_DISABLE_TELEMETRY: "1"
-          ACCEPTANCE_EPISODE_ID: ${{ steps.target.outputs.episode_id }}
-          ACCEPTANCE_SCRIPT_PATH: ${{ steps.target.outputs.script_path }}
+          ACCEPTANCE_EPISODE_ID: ${{ inputs.episode_id }}
+          ACCEPTANCE_SCRIPT_PATH: ${{ inputs.script_path }}
         run: |
           set -o pipefail
+          echo "[ACCEPTANCE] Target episode: ${ACCEPTANCE_EPISODE_ID}"
+          echo "[ACCEPTANCE] Target script:  ${ACCEPTANCE_SCRIPT_PATH}"
           timeout --foreground --signal=TERM --kill-after=60s 285m \
             python -u -m scripts.real_video_acceptance \
             --episode "${ACCEPTANCE_EPISODE_ID}" \

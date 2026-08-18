@@ -46,7 +46,8 @@ async function loadEpisodes() {
   for (const ep of data.episodes || []) {
     const li = document.createElement("li");
     li.textContent = `Episode ${ep.id}${ep.has_final ? " ✓" : ""}`;
-    li.onclick = () => showEpisodeVideo(ep.id);
+    const latest = [...(ep.jobs || [])].reverse().find((job) => job.has_final);
+    li.onclick = () => latest && showJobVideo(latest.job_id, ep.id);
     episodeList.appendChild(li);
   }
 }
@@ -62,11 +63,11 @@ async function loadJobs() {
   }
 }
 
-function showEpisodeVideo(episodeId) {
-  const ep = episodeId.padStart(4, "0");
-  finalVideo.src = `/api/video/${ep}?t=${Date.now()}`;
-  downloadLink.href = `/api/video/${ep}`;
-  downloadLink.download = `episode-${ep}-FINAL.mp4`;
+function showJobVideo(jobId, episodeId) {
+  const url = `/api/jobs/${encodeURIComponent(jobId)}/video`;
+  finalVideo.src = `${url}?t=${Date.now()}`;
+  downloadLink.href = url;
+  downloadLink.download = `episode-${String(episodeId).padStart(4, "0")}-FINAL.mp4`;
   videoPanel.hidden = false;
 }
 
@@ -92,7 +93,7 @@ async function trackJob(jobId) {
     if (job.status === "COMPLETED") {
       clearInterval(pollTimer);
       addMessage(`Episode ${job.episode_id} complete!\nFINAL MP4 ready.`, "bot");
-      showEpisodeVideo(job.episode_id);
+      showJobVideo(job.job_id, job.episode_id);
       loadEpisodes();
     } else if (job.status === "FAILED") {
       clearInterval(pollTimer);
@@ -121,27 +122,29 @@ chatForm.addEventListener("submit", async (e) => {
   }
 });
 
-document.getElementById("btn-new-episode").onclick = () => episodeDialog.showModal();
-document.getElementById("dialog-cancel").onclick = () => episodeDialog.close();
+// Production is Chat-only. The legacy dialog no longer starts a separate
+// production path; it only focuses the canonical Chat input.
+if (document.getElementById("btn-new-episode")) {
+  document.getElementById("btn-new-episode").onclick = () => {
+    episodeDialog.close();
+    chatInput.focus();
+    addMessage("Send Episode ID + Title + Language + complete script in Chat.", "bot");
+  };
+}
+if (document.getElementById("dialog-cancel")) {
+  document.getElementById("dialog-cancel").onclick = () => episodeDialog.close();
+}
 
-episodeForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const episodeId = document.getElementById("episode-id-input").value.padStart(4, "0");
-  const profile = document.getElementById("profile-input").value;
-  episodeDialog.close();
-
-  addMessage(`Create Episode ${episodeId}`, "user");
-  const result = await api("/api/episodes/produce", {
-    method: "POST",
-    body: JSON.stringify({ episode_id: episodeId, profile }),
+if (episodeForm) {
+  episodeForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    episodeDialog.close();
+    chatInput.focus();
   });
-
-  addMessage(`Production started for Episode ${episodeId}.`, "bot");
-  if (result.job_id) trackJob(result.job_id);
-});
+}
 
 addMessage(
-  "Welcome to AURELIA Maker.\nEnter an episode request such as: Create Episode <ID>",
+  "Welcome to AURELIA Maker.\nSend Episode ID + Title + Language + the complete episode content in Chat.",
   "bot"
 );
 

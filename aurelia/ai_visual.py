@@ -142,22 +142,70 @@ def generate_scene_image(
 
 
 def _title_font(size: int):
-    """Return a Unicode-capable local font; keep a safe fallback for minimal runners."""
+    """Return a real Unicode-capable font; never fall back to Pillow's Latin-1 bitmap font."""
+    import os
+    import subprocess
     from PIL import ImageFont
 
-    candidates = (
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    candidates: list[Path] = []
+    configured = os.environ.get("AURELIA_TITLE_FONT")
+    if configured:
+        candidates.append(Path(configured))
+
+    candidates.extend(
+        Path(path)
+        for path in (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
+            "/usr/local/share/fonts/DejaVuSans.ttf",
+            r"C:\\Windows\\Fonts\\segoeui.ttf",
+            r"C:\\Windows\\Fonts\\arial.ttf",
+        )
     )
+
+    try:
+        result = subprocess.run(
+            ["fc-match", "-f", "%{file}", "sans:lang=ar"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            candidates.insert(0, Path(result.stdout.strip()))
+    except OSError:
+        pass
+
+    for root in (
+        Path("/usr/share/fonts"),
+        Path("/usr/local/share/fonts"),
+        Path.home() / ".local/share/fonts",
+    ):
+        if root.exists():
+            candidates.extend(sorted(root.rglob("*.ttf")))
+            candidates.extend(sorted(root.rglob("*.otf")))
+
+    seen: set[str] = set()
     for candidate in candidates:
-        path = Path(candidate)
-        if path.exists():
-            return ImageFont.truetype(str(path), size=size)
-    return ImageFont.load_default()
+        key = str(candidate)
+        if key in seen or not candidate.is_file():
+            continue
+        seen.add(key)
+        try:
+            return ImageFont.truetype(str(candidate), size=size)
+        except (OSError, UnicodeError):
+            continue
+
+    raise RuntimeError(
+        "No Unicode-capable TrueType/OpenType font is available for the AURELIA title card. "
+        "Install a Unicode font such as DejaVu Sans or set AURELIA_TITLE_FONT to a valid font file."
+    )
 
 
 def generate_title_card(title: str, episode: str, output: str | Path, *, width: int = 512, height: int = 512) -> Path:
-    """Generate a deterministic title card without replacing the AI scene backend."""
+    """Generate a deterministic Unicode-safe title card without replacing the AI scene backend."""
     from PIL import Image, ImageDraw
 
     output_path = Path(output)

@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from aurelia.chat_entry import handle_chat_production
 from aurelia.factory_runner import FactoryRunner
 
 OUTPUT = ROOT / "output"
@@ -36,7 +37,7 @@ def serve() -> None:
 @cli.command()
 def chat() -> None:
     """Interactive chat: the message is the sole source for episode production."""
-    click.echo("AURELIA Maker Chat — send the episode command and complete script in one message, or 'quit'.")
+    click.echo("AURELIA Maker Chat — send the episode command and complete episode content in one message, or 'quit'.")
     while True:
         try:
             message = input("You> ").strip()
@@ -44,7 +45,7 @@ def chat() -> None:
             break
         if not message or message.lower() in {"quit", "exit", "q"}:
             break
-        result = RUNNER.handle_chat(message)
+        result = handle_chat_production(RUNNER, message)
         click.echo(f"AURELIA> {result['reply']}")
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-from .ffmpeg_util import run_ffmpeg, run_ffprobe
+from .ffmpeg_util import ffmpeg_binary, run_ffmpeg, run_ffprobe
 
 
 def _run(args: list[str]) -> None:
@@ -74,6 +74,7 @@ def generate_ambient_music(duration_sec: float, output: str | Path) -> Path:
     from pydub import AudioSegment
     from pydub.generators import Sine
     output_path = Path(output); output_path.parent.mkdir(parents=True, exist_ok=True)
+    AudioSegment.converter = ffmpeg_binary()
     duration_ms = int(max(duration_sec, 5) * 1000)
     mixed = Sine(55).to_audio_segment(duration=duration_ms).apply_gain(-22).overlay(Sine(110).to_audio_segment(duration=duration_ms).apply_gain(-26)).overlay(Sine(165).to_audio_segment(duration=duration_ms).apply_gain(-30)).fade_in(2000).fade_out(3000)
     mixed.export(str(output_path), format="wav")

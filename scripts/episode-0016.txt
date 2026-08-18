@@ -1,1 +1,0 @@
-AURELIA Maker: Factory production is currently stalled at stage 32 for Episode 0016. The cinematic pipeline started successfully, but final MP4 generation has not completed yet. Job: 33f92903. Please inspect the Factory worker at stage 32 and report the exact blocking operation/error. Do not restart the job and do not create a duplicate job.

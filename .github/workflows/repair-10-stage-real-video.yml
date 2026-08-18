@@ -1,0 +1,206 @@
+name: AURELIA Maker — 10 Stage Real Video Gate
+
+on:
+  push:
+    branches:
+      - repair/final-real-video-10-stage
+  workflow_dispatch:
+    inputs:
+      episode_id:
+        description: "Four-digit episode id"
+        required: true
+        default: "0013"
+        type: string
+      script_path:
+        description: "Exact repository episode script"
+        required: true
+        default: "scripts/episode-0013.txt"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  real-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      PYTHONPATH: .
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      EPISODE_ID: ${{ inputs.episode_id || '0013' }}
+      SCRIPT_PATH: ${{ inputs.script_path || 'scripts/episode-0013.txt' }}
+
+    steps:
+      - name: "1/10 — CHECKOUT + INVENTORY"
+        uses: actions/checkout@v6
+
+      - name: "1/10 — VERIFY SOURCE CONTRACT"
+        run: |
+          set -euo pipefail
+          test -f aurelia/factory_runner.py
+          test -f aurelia/episode_engine.py
+          test -f aurelia/asset_generator.py
+          test -f aurelia/tts.py
+          test -f aurelia/ffmpeg_util.py
+          test -f aurelia/media.py
+          test -f scripts/real_video_acceptance.py
+          test -s "${SCRIPT_PATH}"
+          test "$(basename "${SCRIPT_PATH}")" = "episode-${EPISODE_ID}.txt"
+          echo "STAGE 1/10 PASS"
+
+      - name: Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: "SYSTEM — MEDIA + FONT DEPENDENCIES"
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg espeak-ng fonts-dejavu fontconfig
+          command -v ffmpeg
+          command -v ffprobe
+          command -v espeak-ng
+          fc-match -f '%{file}\n' 'sans:lang=ar' | head -n 1
+
+      - name: "DEPENDENCIES — INSTALL"
+        run: python -m pip install -r requirements.txt
+
+      - name: "2/10 — COMPLETE PYTHON COMPILE"
+        run: |
+          python -m compileall -q aurelia scripts
+          echo "STAGE 2/10 PASS"
+
+      - name: "3/10 — REAL VISUAL + TTS + MEDIA SMOKE"
+        run: |
+          PYTHONPATH=. python -u scripts/repair_acceptance_smoke.py
+          echo "STAGE 3/10 PASS"
+
+      - name: "4/10 — CANONICAL FACTORY CONTRACT"
+        run: |
+          python -u - <<'PY'
+          from pathlib import Path
+          from aurelia.factory_runner import FactoryRunner
+          from aurelia.asset_generator import generate_scene_image, generate_title_card
+          from aurelia.tts import synthesize_script
+          from aurelia.ffmpeg_util import ffmpeg_binary, ffprobe_binary
+          root = Path('runs/gate-contract')
+          root.mkdir(parents=True, exist_ok=True)
+          assert ffmpeg_binary()
+          assert ffprobe_binary()
+          title = root / 'title.png'
+          scene = root / 'scene.png'
+          wav = root / 'narration.wav'
+          generate_title_card('AURELIA MAKER', 'Contract', title)
+          generate_scene_image(0, 'Contract', 'Unique contract input', scene)
+          synthesize_script('AURELIA Maker contract narration.', wav)
+          assert title.stat().st_size > 1000
+          assert scene.stat().st_size > 1000
+          assert wav.stat().st_size > 1000
+          runner = FactoryRunner('.')
+          assert hasattr(runner, 'execute')
+          print('STAGE 4/10 PASS')
+          PY
+
+      - name: "5/10 — REAL CHAT-TO-FACTORY FINAL MP4"
+        run: |
+          set -euo pipefail
+          rm -rf runs/acceptance
+          timeout --foreground --signal=TERM --kill-after=60s 285m \
+            python -u -m scripts.real_video_acceptance \
+            --episode "${EPISODE_ID}" \
+            --script "${SCRIPT_PATH}" \
+            --output runs/acceptance/final.mp4
+          test -s runs/acceptance/final.mp4
+          test -s runs/acceptance/qc.json
+          echo "STAGE 5/10 PASS — REAL FINAL MP4 EXISTS"
+
+      - name: "6/10 — CONTAINER / STREAM INTEGRITY"
+        run: |
+          set -euo pipefail
+          ffprobe -v error -show_entries format=duration,size,format_name -show_streams -of json runs/acceptance/final.mp4 > runs/acceptance/ffprobe.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data=json.loads(Path('runs/acceptance/ffprobe.json').read_text())
+          fmt=data['format']
+          streams=data.get('streams', [])
+          assert 'mp4' in fmt.get('format_name','')
+          assert float(fmt.get('duration',0)) >= 7
+          assert int(fmt.get('size',0)) >= 100000
+          assert any(s.get('codec_type') == 'video' and s.get('codec_name') == 'h264' for s in streams)
+          assert any(s.get('codec_type') == 'audio' for s in streams)
+          print('STAGE 6/10 PASS')
+          PY
+
+      - name: "7/10 — PRODUCTION MANIFEST + QC PROOF"
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          qc=json.loads(Path('runs/acceptance/qc.json').read_text())
+          assert qc['accepted'] is True
+          assert qc['canonical_path_verified'] is True
+          assert qc['legacy_produce_episode_used'] is False
+          assert qc['qc_checks']['exists'] is True
+          assert qc['qc_checks']['non_empty'] is True
+          assert qc['qc_checks']['duration_ok'] is True
+          assert qc['qc_checks']['has_video'] is True
+          assert qc['qc_checks']['has_audio'] is True
+          print('STAGE 7/10 PASS')
+          PY
+
+      - name: "8/10 — REPRESENTATIVE FRAME DIVERSITY"
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          frames=sorted(Path('runs/acceptance/final_frames').glob('*.png'))
+          assert len(frames) >= 5
+          hashes={hashlib.sha256(p.read_bytes()).hexdigest() for p in frames}
+          assert len(hashes) >= 2
+          print('FRAME_COUNT', len(frames))
+          print('FRAME_HASHES', len(hashes))
+          print('STAGE 8/10 PASS')
+          PY
+
+      - name: "9/10 — FINAL SHA256 + ARTIFACT CHECK"
+        run: |
+          set -euo pipefail
+          sha256sum runs/acceptance/final.mp4 | tee runs/acceptance/final.mp4.sha256
+          test -s runs/acceptance/final.mp4.sha256
+          test -d runs/acceptance/visuals
+          echo "STAGE 9/10 PASS"
+
+      - name: "10/10 — FINAL RELEASE GATE"
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          qc=json.loads(Path('runs/acceptance/qc.json').read_text())
+          assert qc['accepted'] is True
+          assert qc['episode_id'] == '${{ env.EPISODE_ID }}'
+          assert qc['size_bytes'] >= 100000
+          assert qc['duration_seconds'] >= 7
+          assert len(qc['representative_frames']) >= 5
+          print('STAGE 10/10 PASS')
+          print('AURELIA MAKER IS READY FOR REAL VIDEO PRODUCTION')
+          print('FINAL MP4:', qc['artifact'])
+          print('SHA256:', qc['sha256'])
+          PY
+
+      - name: Upload final production evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AURELIA-REAL-VIDEO-GATE
+          path: |
+            runs/acceptance/final.mp4
+            runs/acceptance/qc.json
+            runs/acceptance/ffprobe.json
+            runs/acceptance/final.mp4.sha256
+            runs/acceptance/final_frames/*.png
+            runs/acceptance/visuals/*.png
+            runs/acceptance/error.txt
+          if-no-files-found: warn
+          retention-days: 14

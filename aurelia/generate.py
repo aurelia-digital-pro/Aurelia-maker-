@@ -1,4 +1,4 @@
-"""AURELIA Maker — canonical production interface + web server."""
+"""AURELIA Maker — Chat-only production interface + web server."""
 
 from __future__ import annotations
 
@@ -23,46 +23,20 @@ def cli():
 
 
 @cli.command()
-@click.option("--script", type=click.Path(exists=True, dir_okay=False))
-@click.option("--episode", required=True, help="Explicit episode id to produce")
-@click.option(
-    "--profile",
-    default="both",
-    type=click.Choice(["youtube", "tiktok", "both"]),
-)
-def generate(script: str | None, episode: str, profile: str) -> None:
-    """Execute production through the canonical Factory pipeline."""
-    episode_id = episode.strip().zfill(4)
-    if not episode_id.isdigit() or len(episode_id) != 4:
-        raise click.ClickException("Episode id must be an explicit four-digit value")
-
-    script_path = Path(script) if script else RUNNER.ensure_episode_script(episode_id)
-    click.echo(f"FACTORY: Episode {episode_id}")
-    click.echo(f"SCRIPT: {script_path}")
-    click.echo("PRODUCTION MODE: FACTORY → FINAL MP4")
-
-    job = RUNNER.execute(episode_id, profile=profile, script_path=script_path)
-    click.echo(f"STATUS: {job.status}")
-    click.echo(f"FINAL MP4: {job.final_mp4}")
-
-
-@cli.command()
-@click.option("--host", default="127.0.0.1")
-@click.option("--port", default=8765, type=int)
-def serve(host: str, port: int) -> None:
-    """Launch AURELIA Maker web interface."""
+def serve() -> None:
+    """Launch the AURELIA Maker web chat interface."""
     import uvicorn
 
     from aurelia.server import app
 
-    click.echo(f"AURELIA Maker → http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    click.echo("AURELIA Maker → Chat → Factory → FINAL MP4")
+    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="info")
 
 
 @cli.command()
 def chat() -> None:
-    """Interactive chat REPL for AURELIA Maker."""
-    click.echo("AURELIA Maker Chat — enter a request such as 'Create Episode <ID>' or 'quit'")
+    """Interactive chat: the message is the sole source for episode production."""
+    click.echo("AURELIA Maker Chat — send the episode command and complete script in one message, or 'quit'.")
     while True:
         try:
             message = input("You> ").strip()
@@ -78,8 +52,9 @@ def chat() -> None:
 def status() -> None:
     """Show Factory status."""
     click.echo("FACTORY PIPELINE: CONNECTED")
+    click.echo("PRODUCTION ENTRY: CHAT ONLY")
     click.echo("MODE: Chat → Factory → Cinematic Production → FINAL MP4")
-    click.echo("LEGACY MVP PATH: DISABLED")
+    click.echo("FIXED EPISODE TEMPLATES: DISABLED")
     click.echo(f"OUTPUT: {OUTPUT}")
 
 

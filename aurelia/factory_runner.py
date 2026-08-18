@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import threading
 import traceback
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .episode_engine import EpisodeProduction
 from .production_contract import PRODUCTION_STAGES
@@ -109,7 +110,10 @@ class FactoryRunner:
         title, language = self._extract_metadata(script_text)
 
         production_root = self.output / f"episode-{job.episode_id}"
-        pipeline = build_production_pipeline(production_root / "factory")
+        factory_root = production_root / "factory"
+        if factory_root.exists():
+            shutil.rmtree(factory_root)
+        pipeline = build_production_pipeline(factory_root)
         run = pipeline.orchestrator.create_run(
             project=f"episode-{job.episode_id}",
             metadata={"mode": "production", "source": "chat", "episode_id": job.episode_id, "title": title, "language": language, "profile": profile},

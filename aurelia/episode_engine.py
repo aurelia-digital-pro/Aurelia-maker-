@@ -26,6 +26,7 @@ from .tts import synthesize_script
 
 LogFn = Callable[[str], None]
 
+
 @dataclass
 class ScenePlan:
     index: int
@@ -35,6 +36,7 @@ class ScenePlan:
     movement: str = "push_in"
     direction: dict[str, Any] = field(default_factory=dict)
 
+
 @dataclass
 class EpisodeProduction:
     episode_id: str
@@ -42,6 +44,7 @@ class EpisodeProduction:
     script_path: Path
     profile: str = "youtube"
     max_duration: float = 180.0
+    title: str = ""
     scenes: list[ScenePlan] = field(default_factory=list)
     log: LogFn = field(default=lambda _msg: None)
 
@@ -53,15 +56,40 @@ class EpisodeProduction:
         for path in self.dirs.values():
             path.mkdir(parents=True, exist_ok=True)
         self.director = DirectingEngine()
+        if not self.title:
+            self.title = self._extract_title(self.script_path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _extract_title(request_text: str) -> str:
+        for line in request_text.splitlines():
+            match = re.match(r"^\s*(?:title|العنوان)\s*[:=]\s*(.+?)\s*$", line, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        heading = next((m.group(1).strip() for m in re.finditer(r"^\s*#\s+(.+?)\s*$", request_text, re.MULTILINE)), "")
+        if heading:
+            return heading
+        raise ValueError("Production request contains no real title")
+
+    @staticmethod
+    def _extract_script_body(request_text: str) -> str:
+        lines = []
+        for line in request_text.splitlines():
+            if re.match(r"^\s*(?:title|العنوان|language|lang|اللغة)\s*[:=]\s*.+?\s*$", line, re.IGNORECASE):
+                continue
+            lines.append(line)
+        body = "\n".join(lines).strip()
+        if not body:
+            raise ValueError("Production request contains no episode script content")
+        return body
 
     def _emit(self, message: str) -> None:
         self.log(message)
 
     def load_script(self) -> str:
-        text = self.script_path.read_text(encoding="utf-8").strip()
-        if not text:
+        request_text = self.script_path.read_text(encoding="utf-8").strip()
+        if not request_text:
             raise ValueError(f"Empty script: {self.script_path}")
-        return text
+        return self._extract_script_body(request_text)
 
     def build_scene_plan(self, script_text: str) -> list[ScenePlan]:
         raw = plan_scenes(script_text)
@@ -85,7 +113,7 @@ class EpisodeProduction:
         self._emit("Generating cinematic visual assets...")
         assets: list[Path] = []
         title_path = self.dirs["visuals"] / "00_title.png"
-        generate_title_card("AURELIA MAKER", f"Episode {self.episode_id} — Cinematic Production Factory", title_path)
+        generate_title_card(self.title, f"Episode {self.episode_id}", title_path)
         assets.append(title_path)
         for scene in self.scenes:
             path = self.dirs["visuals"] / f"scene_{scene.index + 1:02d}.png"
@@ -115,10 +143,12 @@ class EpisodeProduction:
         lines: list[str] = []
         cue_index = 1
         cursor = 0.0
+
         def fmt(seconds: float) -> str:
             h = int(seconds // 3600); m = int((seconds % 3600) // 60); s = int(seconds % 60); ms = int((seconds - int(seconds)) * 1000)
             return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-        lines.extend([str(cue_index), f"{fmt(cursor)} --> {fmt(cursor + intro_duration)}", f"AURELIA MAKER — Episode {self.episode_id}", ""])
+
+        lines.extend([str(cue_index), f"{fmt(cursor)} --> {fmt(cursor + intro_duration)}", self.title, ""])
         cue_index += 1; cursor += intro_duration
         for scene in self.scenes:
             end = cursor + per_scene
@@ -163,18 +193,19 @@ class EpisodeProduction:
         final_alias = self.dirs["delivery"] / f"episode-{self.episode_id}-FINAL.mp4"; final_alias.write_bytes(final_youtube.read_bytes()); outputs["final"] = final_alias
         qc = validate_master(final_alias, min_duration=30.0)
         if not qc["passed"]: raise RuntimeError(f"QC failed: {qc}")
-        manifest = {"episode_id": self.episode_id, "duration": probe_duration(final_alias), "outputs": {key: str(path) for key, path in outputs.items()}, "qc": qc, "directing": [scene.direction for scene in self.scenes], "timestamp": time.time()}
+        manifest = {"episode_id": self.episode_id, "title": self.title, "duration": probe_duration(final_alias), "outputs": {key: str(path) for key, path in outputs.items()}, "qc": qc, "directing": [scene.direction for scene in self.scenes], "timestamp": time.time()}
         (self.root / "production_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
         self._emit(f"FINAL MP4 ready: {final_alias}"); return outputs
 
     def produce(self) -> dict[str, Any]:
-        self._emit(f"Starting Factory production — Episode {self.episode_id}")
-        script_text = self.load_script(); self.build_scene_plan(script_text); assets = self.generate_visual_assets(); narration = self.synthesize_narration(script_text); srt = self.build_subtitles(narration); duration = max(probe_duration(narration), sum(s.duration for s in self.scenes) + 8.0); music_path = self.dirs["audio"] / "ambient_music.wav"; generate_ambient_music(duration + 4.0, music_path); clips = self.render_shots(assets); edit = self.assemble_edit(clips, narration, music_path); outputs = self.finish(edit, srt)
-        return {"episode_id": self.episode_id, "final_mp4": str(outputs["final"]), "outputs": {k: str(v) for k, v in outputs.items()}, "duration": probe_duration(outputs["final"]), "scenes": len(self.scenes)}
+        self._emit(f"Starting Factory production — Episode {self.episode_id}: {self.title}")
+        script_text = self.load_script(); self.build_scene_plan(script_text); assets = self.generate_visual_assets(); narration = self.synthesize_narration(script_text); srt = self.build_subtitles(narration); duration = max(probe_duration(narration), sum(scene.duration for scene in self.scenes) + 8.0); music_path = self.dirs["audio"] / "ambient_music.wav"; generate_ambient_music(duration + 4.0, music_path); clips = self.render_shots(assets); edit = self.assemble_edit(clips, narration, music_path); outputs = self.finish(edit, srt)
+        return {"episode_id": self.episode_id, "title": self.title, "final_mp4": str(outputs["final"]), "outputs": {k: str(v) for k, v in outputs.items()}, "duration": probe_duration(outputs["final"]), "scenes": len(self.scenes)}
 
 
 def produce_episode(episode_id: str, script_path: str | Path, output_root: str | Path, profile: str = "both", log: LogFn | None = None) -> dict[str, Any]:
     production = EpisodeProduction(episode_id=episode_id, root=Path(output_root) / f"episode-{episode_id.zfill(4) if episode_id.isdigit() else episode_id}", script_path=Path(script_path), profile=profile, log=log or (lambda _m: None))
     return production.produce()
+
 
 __all__ = ["EpisodeProduction", "produce_episode", "ScenePlan"]

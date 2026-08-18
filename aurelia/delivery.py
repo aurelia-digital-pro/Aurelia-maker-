@@ -75,8 +75,8 @@ def validate_video_artifact(path: Path | None, min_duration: float = 1.0) -> dic
         return {"passed": False, "checks": checks, "sha256": ""}
 
     probe = run_ffprobe([
-        "-v", "error", "-show_entries", "format=format_name,duration",
-        "-show_entries", "stream=codec_type,codec_name,width,height",
+        "-v", "error",
+        "-show_entries", "format=format_name,duration:stream=codec_type,codec_name,width,height",
         "-of", "json", str(path),
     ])
     if probe.returncode != 0:
@@ -88,10 +88,12 @@ def validate_video_artifact(path: Path | None, min_duration: float = 1.0) -> dic
         video = next((s for s in streams if s.get("codec_type") == "video"), None)
         audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
         duration = float(fmt.get("duration") or 0)
+        format_name = str(fmt.get("format_name") or "")
         checks["ffprobe_readable"] = True
         checks["has_video"] = bool(video and video.get("codec_name") in {"h264", "hevc", "mpeg4"} and int(video.get("width", 0)) > 0 and int(video.get("height", 0)) > 0)
         checks["duration_valid"] = duration >= min_duration
         checks["has_audio"] = audio is not None
+        checks["mp4_extension"] = "mp4" in format_name.split(",") or format_name == "mp4"
     except (ValueError, TypeError, json.JSONDecodeError):
         pass
 
@@ -114,7 +116,8 @@ def process_delivery(data: dict) -> dict:
     if not source_path.is_file():
         raise FileNotFoundError(source_path)
 
-    source_validation = validate_video_artifact(source_path, min_duration=float(data.get("min_duration", 1.0)))
+    min_duration = float(data.get("min_duration", 1.0))
+    source_validation = validate_video_artifact(source_path, min_duration=min_duration)
     if not source_validation["passed"]:
         raise ValueError(f"DELIVERY rejected invalid final artifact: {source_validation}")
 
@@ -124,7 +127,7 @@ def process_delivery(data: dict) -> dict:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(source_path.read_bytes())
-    output_validation = validate_video_artifact(output_path, min_duration=float(data.get("min_duration", 1.0)))
+    output_validation = validate_video_artifact(output_path, min_duration=min_duration)
     if not output_validation["passed"] or output_validation["sha256"] != source_validation["sha256"]:
         raise ValueError("DELIVERY output validation failed")
 

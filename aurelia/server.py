@@ -35,14 +35,9 @@ class ChatRequest(BaseModel):
     message: str
 
 
-class EpisodeRequest(BaseModel):
-    episode_id: str
-    profile: str = "both"
-
-
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "factory": "connected"}
+    return {"status": "ok", "factory": "connected", "production_entry": "chat_only"}
 
 
 @app.get("/api/episodes")
@@ -99,16 +94,6 @@ def get_job(job_id: str):
 @app.post("/api/chat")
 def chat(req: ChatRequest):
     return runner.handle_chat(req.message)
-
-
-@app.post("/api/episodes/produce")
-def produce_episode(req: EpisodeRequest):
-    job = runner.execute_async(req.episode_id.zfill(4), profile=req.profile)
-    return {
-        "job_id": job.job_id,
-        "episode_id": job.episode_id,
-        "status": job.status,
-    }
 
 
 @app.get("/api/video/{episode_id}")

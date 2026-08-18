@@ -73,7 +73,7 @@ class FactoryRunner:
         self._set_stage(job, "PRODUCTION", 20.0); self._log(job, f"[FACTORY] Starting canonical production — Episode {job.episode_id}")
         pipeline = build_production_pipeline(self.output / f"episode-{job.episode_id}" / "factory")
         production = EpisodeProduction(episode_id=job.episode_id, root=self.output / f"episode-{job.episode_id}", script_path=script_path, profile=profile, log=lambda message: self._log(job, f"[FACTORY] {message}"))
-        state = {"script": str(script_path.resolve()), "episode": job.episode_id, "profile": profile, "root": str(self.root), "production": production}
+        state = {"script": str(script_path.resolve()), "episode": job.episode_id, "profile": profile, "root": str(self.root)}
         assets: list[Path] = []; narration: Path | None = None; subtitles: Path | None = None; music: Path | None = None; edit: Path | None = None; graded: Path | None = None; subtitled: Path | None = None; final_outputs: dict[str, Path] = {}
         def passthrough(data, stage): return {**data, "stage": stage}
         def script_processor(data): return {**data, "stage": "SCRIPT", "text": production.load_script()}

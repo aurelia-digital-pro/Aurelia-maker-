@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "AURELIA Maker"
+description = "A local-first cinematic production workspace where each new video begins with the current chat request, runs through an isolated production pipeline, and exposes truthful stage state and validated outputs."
+version = "1.0.0"
+id = "artifacts/aurelia-maker"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24748
+
+[services.development]
+run = "pnpm --filter @workspace/aurelia-maker run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/aurelia-maker", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/aurelia-maker/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24748"
+BASE_PATH = "/"

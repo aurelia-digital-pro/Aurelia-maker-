@@ -1,0 +1,776 @@
+# AURELIA Maker — FULL PRODUCTION ENGINEERING & REBUILD MISSION
+
+I am uploading the current AURELIA Maker project as a ZIP.
+
+Treat the uploaded repository as the complete source of truth.
+
+This is NOT a request for a theoretical analysis, architecture proposal, mockup, demo, or list of suggestions.
+
+I want you to work directly on the project and deliver the strongest professional implementation you can produce.
+
+Your responsibility is to inspect the existing system, understand it, make the necessary engineering decisions, implement the required fixes and missing capabilities, test the result, and deliver the working project.
+
+Do not make me perform the engineering work myself.
+
+Do not stop after diagnosis.
+
+Do not give me a long analysis and then ask me to implement your suggestions.
+
+Inspect → Decide → Implement → Test → Fix → Verify → Deliver.
+
+============================================================
+1. PRIMARY OBJECTIVE
+============================================================
+
+Transform AURELIA Maker into a real local-first intelligent cinematic video production system.
+
+The system must be capable of taking a NEW USER REQUEST through Chat and turning that request into a real production.
+
+The fundamental source of every new production must be:
+
+USER CHAT
+
+or an explicitly submitted USER SCRIPT.
+
+There must be NO hidden content source.
+
+There must be NO automatic fallback to an old episode.
+
+There must be NO automatic fallback to an old script.
+
+There must be NO automatic fallback to a template episode.
+
+There must be NO automatic fallback to a previous SERIES_BIBLE.
+
+There must be NO automatic fallback to demo content.
+
+There must be NO automatic fallback to test content.
+
+============================================================
+2. ABSOLUTE CONTENT SOURCE RULE
+============================================================
+
+AURELIA Maker must become CHAT-DRIVEN.
+
+Every new episode must be created from the CURRENT USER REQUEST.
+
+The current request determines the production.
+
+Each episode must be able to have completely different:
+
+- subject
+- story
+- narrative structure
+- duration
+- number of scenes
+- scene types
+- visual style
+- camera language
+- pacing
+- narration
+- music
+- sound design
+- subtitles
+- aspect ratio
+- target platform
+- tone
+- characters
+- locations
+- visual identity
+- production requirements
+
+Do NOT force every episode into the same structure.
+
+AURELIA Maker is NOT an Episode Template Generator.
+
+It is an intelligent production engine.
+
+============================================================
+3. REMOVE LEGACY PRODUCTION CONTAMINATION
+============================================================
+
+Inspect the entire repository for legacy/demo/test production data.
+
+Identify and remove or isolate anything that can become an automatic source for a new production, including:
+
+- old episode templates
+- old episode scripts
+- old production prompts
+- sample episodes
+- demo projects
+- hardcoded episode content
+- hardcoded narration
+- hardcoded scene plans
+- hardcoded visual prompts
+- hardcoded production jobs
+- test serialization data
+- TEST SERIALIZATION TRACE
+- Episode 0001
+- Episode 0016
+- previous production state
+- stale factory state
+- previous SERIES_BIBLE content
+- default sample content
+- placeholder content
+- test assets
+- old MP4 references
+- stale JSON state
+- demo outputs
+
+Do not blindly delete historical information if the application legitimately needs historical records.
+
+Instead, establish a strict separation between:
+
+HISTORICAL DATA
+
+and
+
+NEW PRODUCTION INPUT.
+
+Historical data must NEVER silently become the source of a new production.
+
+A new production must start from the current Chat/User Script.
+
+============================================================
+4. SERIES ENGINE — REQUIRED
+============================================================
+
+AURELIA Maker must not only support isolated videos.
+
+It must become a real SERIES PRODUCTION ENGINE.
+
+The system must be capable of producing multiple episodes while preserving legitimate series-level continuity.
+
+However, series continuity must NOT override the current episode request.
+
+The architecture should support:
+
+SERIES
+↓
+EPISODE
+↓
+CURRENT USER REQUEST
+↓
+EPISODE-SPECIFIC INTELLIGENCE
+↓
+EPISODE-SPECIFIC SCRIPT
+↓
+EPISODE-SPECIFIC SCENES
+↓
+EPISODE-SPECIFIC PRODUCTION
+↓
+FINAL EPISODE VIDEO
+
+A series may contain legitimate continuity such as:
+
+- series identity
+- established characters
+- world information
+- timeline
+- recurring concepts
+- visual identity
+- continuity information
+
+But every new episode must still be generated from its CURRENT USER CHAT REQUEST.
+
+Do not use a previous episode as the script for the next episode.
+
+Do not clone Episode N into Episode N+1.
+
+Do not use an old episode as a hidden production template.
+
+The series engine must provide continuity WITHOUT turning the system into a fixed template generator.
+
+============================================================
+5. INTELLIGENT EPISODE GENERATION
+============================================================
+
+Every episode must be interpreted according to its own request.
+
+The engine should determine the appropriate production structure dynamically.
+
+Do not assume that every episode requires the same number of scenes.
+
+Do not assume that every episode requires the same duration.
+
+Do not assume that every episode requires the same visual treatment.
+
+Do not assume that every episode requires the same narration style.
+
+Do not assume that every episode requires the same music structure.
+
+The production engine must adapt to the content.
+
+============================================================
+6. REAL PRODUCTION PIPELINE
+============================================================
+
+The target production architecture is:
+
+USER CHAT / USER SCRIPT
+        ↓
+REQUEST UNDERSTANDING
+        ↓
+SCRIPT INTELLIGENCE
+        ↓
+STORY / NARRATIVE DESIGN
+        ↓
+SCENE PLANNING
+        ↓
+VISUAL DIRECTION
+        ↓
+NARRATION
+        ↓
+SCENE TIMING
+        ↓
+VISUAL GENERATION
+        ↓
+SCENE VIDEO
+        ↓
+SUBTITLES
+        ↓
+MUSIC
+        ↓
+SOUND DESIGN
+        ↓
+ASSEMBLY
+        ↓
+QC
+        ↓
+FINAL MP4
+
+Every stage must consume real output from the previous stage.
+
+Do not simulate completion.
+
+Do not silently skip failed stages.
+
+Do not report success when a required artifact does not exist.
+
+============================================================
+7. CINEMATIC QUALITY
+============================================================
+
+I want the most professional cinematic implementation that is realistically achievable within the project's available environment and resources.
+
+Do not artificially restrict the implementation to a simplistic slideshow.
+
+The system should support professional cinematic principles where appropriate:
+
+- visual storytelling
+- shot composition
+- camera movement
+- framing
+- lighting
+- atmosphere
+- depth
+- pacing
+- continuity
+- transitions
+- scene rhythm
+- narrative progression
+- sound design
+- music
+- narration
+- subtitles
+
+The implementation should dynamically adapt these elements to the requested story.
+
+Do not use one generic cinematic template for every episode.
+
+============================================================
+8. NARRATION
+============================================================
+
+Use the best practical human-like narration solution available to the project.
+
+Inspect the existing implementation and environment.
+
+Choose the strongest technically appropriate solution.
+
+The narration system should support:
+
+- natural voice
+- intelligible speech
+- appropriate pacing
+- pauses
+- timing
+- synchronization
+- audio normalization
+- clean final audio
+
+Do not use fixed sample narration.
+
+Do not reuse an old episode's narration.
+
+============================================================
+9. VIDEO ENGINE
+============================================================
+
+Determine the best production implementation available for the project.
+
+Do not assume a specific library or engine before inspecting the repository.
+
+Choose the technically strongest solution based on:
+
+- reliability
+- quality
+- automation
+- local execution
+- maintainability
+- performance
+- output compatibility
+- production stability
+
+If external services are already part of the legitimate architecture, integrate them correctly.
+
+If local components are available and appropriate, use them where technically justified.
+
+Do not create fake video generation.
+
+Do not use placeholder video generation.
+
+============================================================
+10. TIKTOK + YOUTUBE
+============================================================
+
+The production system must support real output for:
+
+TikTok
+YouTube Shorts
+YouTube Long-form
+
+The production engine should dynamically select the appropriate output configuration based on the current user request.
+
+Support appropriate:
+
+- aspect ratio
+- resolution
+- duration
+- subtitles
+- audio
+- encoding
+- pacing
+- composition
+
+Do not force one output format on every production.
+
+============================================================
+11. PRODUCTION JOB ISOLATION
+============================================================
+
+Every new production must have its own isolated production workspace.
+
+Do not reuse artifacts from previous jobs.
+
+A new job must not silently reuse:
+
+- old MP4
+- old scene video
+- old narration
+- old subtitles
+- old music
+- old JSON
+- old prompts
+- old production state
+
+Every artifact must belong clearly to its production job.
+
+============================================================
+12. FINAL MP4 VALIDATION
+============================================================
+
+A production is NOT successful merely because a command returned exit code 0.
+
+The final MP4 must be verified.
+
+Verify, where applicable:
+
+- file exists
+- file is non-empty
+- correct container
+- valid video stream
+- valid codec
+- duration > 0
+- valid resolution
+- valid audio stream
+- readable by ffprobe
+- decodable
+- generated by the CURRENT production job
+- not an old artifact
+
+Only after real validation may the system mark the final production as READY / VALIDATED.
+
+============================================================
+13. REAL PRODUCTION STATE
+============================================================
+
+Production state must come from actual execution.
+
+Do not hardcode:
+
+100%
+READY
+SUCCESS
+PRODUCTION READY
+
+Use truthful states such as:
+
+QUEUED
+RUNNING
+COMPLETED
+FAILED
+BLOCKED
+VALIDATED
+NOT IMPLEMENTED
+
+Use additional states if the architecture requires them.
+
+If a stage fails, downstream stages must not falsely appear successful.
+
+============================================================
+14. UI
+============================================================
+
+The UI must be integrated into the actual application.
+
+It must not be a decorative mockup.
+
+The user should be able to:
+
+- enter a production request through Chat
+- optionally provide a script
+- create a new production
+- monitor the production
+- inspect the generated story
+- inspect scene planning
+- inspect narration
+- inspect timing
+- inspect visual generation
+- inspect scene videos
+- inspect subtitles
+- inspect music
+- inspect assembly
+- inspect QC
+- access the final MP4
+
+The UI must reflect real backend state.
+
+Never display a successful production state without evidence.
+
+============================================================
+15. VIDEO OUTPUT MUST NOT CONTAIN UI
+============================================================
+
+The final video must contain only the intended video output.
+
+Never allow:
+
+- dashboard
+- browser UI
+- controls
+- prompts
+- source panels
+- debugging overlays
+- HTML interface
+- production controls
+- development UI
+
+to appear inside the final video.
+
+If browser/canvas rendering is used, ensure the export captures the intended video output rather than the application interface.
+
+============================================================
+16. DO NOT REBUILD FOR THE SAKE OF REBUILDING
+============================================================
+
+Preserve existing working architecture where appropriate.
+
+Do not rewrite healthy components unnecessarily.
+
+Do not introduce unnecessary technologies.
+
+Do not add unnecessary complexity.
+
+Fix what is broken.
+
+Improve what genuinely needs improvement.
+
+Implement what is genuinely missing.
+
+Preserve what already works.
+
+But if an existing design fundamentally prevents the system from reaching the required production goal, make the necessary engineering change.
+
+You are responsible for deciding the appropriate solution.
+
+============================================================
+17. ENGINEERING AUTONOMY
+============================================================
+
+Do not make me choose between technical alternatives.
+
+Do not ask me:
+
+"Should I use A or B?"
+
+unless a decision genuinely requires information that only I can provide.
+
+Make the professional engineering decision yourself.
+
+Choose the strongest practical implementation.
+
+Then implement it.
+
+============================================================
+18. NO THEORETICAL DELIVERY
+============================================================
+
+Do not deliver:
+
+- architecture diagrams instead of implementation
+- pseudocode instead of implementation
+- TODOs instead of implementation
+- placeholder functions
+- fake services
+- fake production state
+- fake QC
+- fake MP4
+- demo content
+- hardcoded success
+- superficial UI
+
+The project itself must contain the actual implementation.
+
+============================================================
+19. COMPLETE FILE DELIVERY
+============================================================
+
+I want the actual corrected project.
+
+Do not only show snippets.
+
+When files need to be created or changed, create/change the complete files in the project.
+
+Preserve the correct directory structure.
+
+Ensure dependencies and configuration are consistent.
+
+Ensure the project can actually be run locally.
+
+If possible, provide the final project as a complete export/archive.
+
+============================================================
+20. TEST THE REAL SYSTEM
+============================================================
+
+After implementation, execute real tests.
+
+Do not stop at:
+
+"the server starts."
+
+Do not stop at:
+
+"the UI loads."
+
+Do not stop at:
+
+"the API returns 200."
+
+The critical test is a completely NEW production.
+
+Create a new production from a NEW USER CHAT REQUEST.
+
+Do not use:
+
+- old episode
+- old script
+- old template
+- old assets
+- mock data
+- fake production state
+
+Run the complete pipeline.
+
+If something fails:
+
+diagnose it,
+fix it,
+test again.
+
+Continue until the production succeeds or an unavoidable external blocker remains.
+
+============================================================
+21. EXTERNAL BLOCKERS
+============================================================
+
+If the only remaining blocker is something genuinely external, such as:
+
+- unavailable API credential
+- unavailable external service
+- unavailable model
+- missing system resource
+
+do not fake success.
+
+Identify the exact blocker.
+
+But before declaring a blocker, exhaust all reasonable fixes available inside the project and environment.
+
+============================================================
+22. FINAL DELIVERABLE
+============================================================
+
+At the end, provide a concise final result containing:
+
+PROJECT STATUS
+
+WHAT WAS ACTUALLY FIXED
+
+FILES CREATED / MODIFIED
+
+HOW TO RUN LOCALLY
+
+HOW TO CREATE A NEW PRODUCTION
+
+REAL PRODUCTION TEST RESULT
+
+FINAL MP4 RESULT
+
+If successful:
+
+FINAL MP4 PATH
+FILE SIZE
+DURATION
+RESOLUTION
+VIDEO CODEC
+AUDIO STREAM
+VALIDATION STATUS
+
+If unsuccessful:
+
+FAILED STAGE
+ROOT CAUSE
+EXACT REMAINING BLOCKER
+
+Do not claim success without proof.
+
+============================================================
+23. FINAL PRODUCT DEFINITION
+============================================================
+
+The final system must be understood as:
+
+AURELIA Maker
+=
+INTELLIGENT LOCAL CINEMATIC PRODUCTION ENGINE
++
+SERIES PRODUCTION ENGINE
++
+EPISODE PRODUCTION ENGINE
++
+REAL VIDEO RENDERING PIPELINE
+
+It must support:
+
+ONE-OFF VIDEOS
+
+and
+
+MULTI-EPISODE SERIES.
+
+A series must be able to contain many episodes.
+
+Each episode must be individually generated from its current user request.
+
+The system must maintain legitimate continuity where required, but must never allow old episodes or templates to silently dictate the new episode.
+
+============================================================
+24. ABSOLUTE SOURCE OF NEW CONTENT
+============================================================
+
+For every new episode:
+
+CURRENT USER CHAT / CURRENT USER SCRIPT
+must be the authoritative production input.
+
+Nothing else may silently override it.
+
+No old episode.
+
+No fixed template.
+
+No sample script.
+
+No demo.
+
+No hidden prompt.
+
+No stale state.
+
+No test serialization.
+
+No previous episode as automatic source.
+
+No generic episode structure forced onto every production.
+
+============================================================
+25. FINAL COMMAND
+============================================================
+
+Start now.
+
+Inspect the uploaded ZIP completely.
+
+Understand the existing implementation.
+
+Identify the real problems.
+
+Make the professional engineering decisions yourself.
+
+Fix the existing system.
+
+Remove legacy production contamination.
+
+Implement the missing capabilities that are genuinely required.
+
+Preserve what already works.
+
+Build the real intelligent production engine.
+
+Build the real series/episode architecture.
+
+Integrate the UI with the real backend.
+
+Implement truthful production state.
+
+Implement real validation.
+
+Run a completely NEW production from a NEW USER CHAT REQUEST.
+
+Produce a real cinematic MP4.
+
+Validate it.
+
+Then deliver the corrected project and the complete final implementation.
+
+Do not stop at analysis.
+
+Do not stop at recommendations.
+
+Do not ask me to implement your solution.
+
+Do not create a fake success.
+
+Do not create a demo and call it production.
+
+I want the actual professional solution.
+
+I want the actual working application.
+
+I want the actual corrected files and code.
+
+I want the final result to be usable locally.
+
+**Build AURELIA Maker as a real intelligent cinematic production factory, including multi-episode series production, with every new episode originating from its current Chat request and no legacy template or episode controlling new production.**

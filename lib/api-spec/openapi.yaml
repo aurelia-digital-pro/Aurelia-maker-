@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: productions
+    description: Chat-driven cinematic productions
 paths:
   /healthz:
     get:
@@ -24,7 +26,80 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /productions:
+    get:
+      operationId: listProductions
+      tags: [productions]
+      summary: List productions created in this server session
+      responses:
+        "200":
+          description: Productions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Production"
+    post:
+      operationId: createProduction
+      tags: [productions]
+      summary: Start a production from the current user request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductionInput"
+      responses:
+        "202":
+          description: Production accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Production"
+        "400":
+          description: Invalid production request
+  /productions/{jobId}:
+    get:
+      operationId: getProduction
+      tags: [productions]
+      summary: Get production state and evidence
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Production
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Production"
+        "404":
+          description: Production not found
+  /productions/{jobId}/video:
+    get:
+      operationId: getProductionVideo
+      tags: [productions]
+      summary: Download a validated final MP4
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Final MP4
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Video not found or not validated
 components:
+  parameters:
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema:
+        type: string
   schemas:
     HealthStatus:
       type: object
@@ -33,4 +108,57 @@ components:
           type: string
       required:
         - status
+    ProductionInput:
+      type: object
+      properties:
+        request:
+          type: string
+          minLength: 1
+        episodeId:
+          type: string
+          minLength: 1
+        profile:
+          type: string
+          enum: [youtube, tiktok, both]
+      required: [request]
+    Production:
+      type: object
+      properties:
+        jobId:
+          type: string
+        episodeId:
+          type: string
+        status:
+          type: string
+          enum: [QUEUED, RUNNING, COMPLETED, FAILED, BLOCKED, VALIDATED]
+        stage:
+          type: string
+        progress:
+          type: number
+        title:
+          type: string
+        language:
+          type: string
+        profile:
+          type: string
+        request:
+          type: string
+        source:
+          type: string
+        createdAt:
+          type: string
+        finalMp4:
+          type: [string, "null"]
+        downloadUrl:
+          type: [string, "null"]
+        error:
+          type: [string, "null"]
+        logs:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties: true
+      required: [jobId, episodeId, status, stage, progress, request, source, createdAt, logs]
 

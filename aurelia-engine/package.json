@@ -1,0 +1,10 @@
+{
+  "name": "aurelia-maker-ui",
+  "version": "1.0.0",
+  "description": "AURELIA Maker — Chat → Factory → FINAL MP4",
+  "private": true,
+  "scripts": {
+    "start": "python -m aurelia.generate serve",
+    "produce": "python -m aurelia.generate generate --episode 0013 --profile both"
+  }
+}

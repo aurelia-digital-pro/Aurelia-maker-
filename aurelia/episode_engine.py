@@ -18,6 +18,7 @@ from .media import (
     generate_ambient_music,
     master_encode,
     mix_narration_and_music,
+    pad_video_to_duration,
     probe_duration,
     validate_master,
 )
@@ -180,7 +181,10 @@ class EpisodeProduction:
     def assemble_edit(self, clips: list[Path], narration_path: Path, music_path: Path) -> Path:
         self._emit("Editing — concatenating shots and mixing audio...")
         video_only = self.dirs["edit"] / "video_concat.mp4"; concat_clips(clips, video_only)
-        mixed = self.dirs["edit"] / "edit_mixed.mp4"; mix_narration_and_music(video_only, narration_path, mixed, music_path)
+        target_duration = max(30.0, probe_duration(narration_path))
+        padded_video = self.dirs["edit"] / "video_padded.mp4"
+        pad_video_to_duration(video_only, padded_video, target_duration)
+        mixed = self.dirs["edit"] / "edit_mixed.mp4"; mix_narration_and_music(padded_video, narration_path, mixed, music_path)
         return mixed
 
     def finish(self, edit_path: Path, srt_path: Path) -> dict[str, Path]:

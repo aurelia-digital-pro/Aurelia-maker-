@@ -55,16 +55,40 @@ def concat_clips(clips: list[str | Path], output: str | Path) -> Path:
     return output_path
 
 
+def pad_video_to_duration(source: str | Path, output: str | Path, duration: float) -> Path:
+    """Extend a short visual edit by holding its final frame."""
+    source = _require_file(source, "Video")
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    current = probe_duration(source)
+    if current >= duration:
+        if Path(source) != output_path:
+            _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(source), "-c", "copy", str(output_path)], output_path)
+        return output_path
+    pad_seconds = max(0.0, duration - current)
+    _run(
+        [
+            "-y", "-hide_banner", "-loglevel", "error", "-i", str(source),
+            "-vf", f"tpad=stop_mode=clone:stop_duration={pad_seconds:.6f}",
+            "-t", f"{duration:.6f}", "-an", "-c:v", "libx264", "-preset", "medium",
+            "-crf", "18", "-pix_fmt", "yuv420p", str(output_path),
+        ],
+        output_path,
+    )
+    return output_path
+
+
 def mix_narration_and_music(video: str | Path, narration: str | Path, output: str | Path, music: str | Path | None = None) -> Path:
     video = _require_file(video, "Video")
     narration = _require_file(narration, "Narration")
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    target_duration = max(30.0, probe_duration(video), probe_duration(narration))
     if music is not None and Path(music).is_file() and Path(music).stat().st_size > 0:
         music = Path(music)
-        _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(video), "-i", str(narration), "-i", str(music), "-filter_complex", "[1:a]volume=1.0[narr];[2:a]volume=0.18[bgm];[narr][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]", "-map", "0:v:0", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", str(output_path)], output_path)
+        _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(video), "-i", str(narration), "-i", str(music), "-filter_complex", f"[1:a]apad=whole_dur={target_duration:.6f},volume=1.0[narr];[2:a]volume=0.18[bgm];[narr][bgm]amix=inputs=2:duration=longest:dropout_transition=2,atrim=duration={target_duration:.6f}[aout]", "-map", "0:v:0", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-t", f"{target_duration:.6f}", str(output_path)], output_path)
     else:
-        _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(video), "-i", str(narration), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", str(output_path)], output_path)
+        _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(video), "-i", str(narration), "-filter_complex", f"[1:a]apad=whole_dur={target_duration:.6f}[aout]", "-map", "0:v:0", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-t", f"{target_duration:.6f}", str(output_path)], output_path)
     return output_path
 
 
@@ -132,4 +156,4 @@ def validate_master(path: str | Path, min_duration: float = 5.0) -> dict:
     return {"passed": all(checks.values()), "checks": checks, "duration": duration}
 
 
-__all__ = ["concat_clips", "mix_narration_and_music", "apply_color_grade", "burn_subtitles", "master_encode", "generate_ambient_music", "probe_duration", "probe_has_audio", "validate_master"]
+__all__ = ["concat_clips", "pad_video_to_duration", "mix_narration_and_music", "apply_color_grade", "burn_subtitles", "master_encode", "generate_ambient_music", "probe_duration", "probe_has_audio", "validate_master"]

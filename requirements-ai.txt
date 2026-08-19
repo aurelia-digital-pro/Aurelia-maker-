@@ -1,0 +1,7 @@
+# Optional local AI visual backend for aurelia/ai_visual.py
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+diffusers>=0.30.0
+transformers>=4.45.0
+accelerate>=1.0.0
+safetensors>=0.4.0

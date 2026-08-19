@@ -128,7 +128,7 @@ class FactoryRunner:
             log=lambda message: self._log(job, f"[FACTORY] {message}"),
         )
         state: dict[str, Any] = {
-            "script": str(script_path), "text": script_text, "episode": job.episode_id,
+            "script": str(script_path), "text": production.load_script(), "episode": job.episode_id,
             "job_id": job.job_id, "title": title, "language": language, "profile": profile,
             "root": str(self.root.resolve()), "source": "chat", "source_text_sha256": source_sha256,
         }
@@ -144,7 +144,7 @@ class FactoryRunner:
 
         def script_processor(data):
             loaded = production.load_script().strip()
-            if loaded != script_text:
+            if loaded != data["text"].strip():
                 raise RuntimeError("SCRIPT input changed: production is not using the current Chat request")
             return {**data, "stage": "SCRIPT", "text": loaded, "source_text_sha256": source_sha256}
 

@@ -63,11 +63,11 @@ class FactoryRunner:
                 return match.group(1).zfill(4)
         return None
 
-    def create_job(self, episode_id: str, profile: str = "both", script_path: Path | None = None) -> ProductionJob:
+    def create_job(self, episode_id: str, profile: str = "both", script_path: Path | None = None, job_id: str | None = None) -> ProductionJob:
         if not episode_id or not episode_id.strip():
             raise ValueError("Production requires an episode identifier")
         normalized = episode_id.zfill(4) if episode_id.isdigit() else episode_id.strip()
-        job = ProductionJob(job_id=uuid.uuid4().hex, episode_id=normalized, metadata={"profile": profile})
+        job = ProductionJob(job_id=job_id or uuid.uuid4().hex, episode_id=normalized, metadata={"profile": profile})
         if script_path is not None:
             job.metadata["script"] = str(script_path.resolve())
         with self._lock:
@@ -143,10 +143,11 @@ class FactoryRunner:
         final_outputs: dict[str, Path] = {}
 
         def script_processor(data):
-            loaded = production.load_script().strip()
-            if loaded != script_text:
+            raw_request = script_path.read_text(encoding="utf-8").strip()
+            if raw_request != script_text:
                 raise RuntimeError("SCRIPT input changed: production is not using the current Chat request")
-            return {**data, "stage": "SCRIPT", "text": loaded, "source_text_sha256": source_sha256}
+            loaded_body = production.load_script().strip()
+            return {**data, "stage": "SCRIPT", "text": loaded_body, "source_text_sha256": source_sha256}
 
         def source_stage(stage: str, key: str, extra: dict[str, Any] | None = None):
             def process(data):

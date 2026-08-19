@@ -1,0 +1,40 @@
+name: AURELIA Maker — Cinematic Intelligence
+
+on:
+  workflow_dispatch:
+    inputs:
+      script_path:
+        description: "Exact repository script supplied for this validation run"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  cinematic-intelligence:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Select explicitly supplied script
+        id: script
+        shell: bash
+        run: |
+          SCRIPT="${{ inputs.script_path }}"
+          test -n "$SCRIPT"
+          test -s "$SCRIPT"
+          echo "path=$SCRIPT" >> "$GITHUB_OUTPUT"
+          echo "Using explicitly supplied episode script: $SCRIPT"
+
+      - name: Run content perturbation and reverse tests
+        run: python -u scripts/cinematic_intelligence_check.py --script "${{ steps.script.outputs.path }}"

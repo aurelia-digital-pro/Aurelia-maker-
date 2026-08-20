@@ -1,0 +1,24 @@
+{
+  "backend": "diffusers",
+  "model": {
+    "id": "stabilityai/stable-diffusion-2-1",
+    "source": "huggingface",
+    "requires_token": true,
+    "recommended_revision": "fp16"
+  },
+  "cache_dir": "~/.cache/aurelia/models",
+  "device_policy": "auto",
+  "precision": "fp32",
+  "image": {
+    "width": 512,
+    "height": 512,
+    "steps": 20,
+    "guidance_scale": 7.5,
+    "negative_prompt": "text, watermark, logo, UI, low quality"
+  },
+  "seed_policy": "content_based",
+  "provenance": {
+    "record_sha256": true,
+    "include_env": true
+  }
+}

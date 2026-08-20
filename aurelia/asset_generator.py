@@ -1,4 +1,9 @@
-"""AURELIA Maker — procedural cinematic visual asset generation."""
+"""AURELIA Maker — procedural cinematic visual asset generation (enhanced).
+
+This file extends the original asset generator with multiple visual styles
+and variation controls so the factory produces diverse scene plates instead
+of a single static template.
+"""
 
 from __future__ import annotations
 
@@ -6,9 +11,10 @@ import hashlib
 import math
 import random
 from pathlib import Path
+from typing import Tuple
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops
 
 
 def _lerp(a: float, b: float, t: float) -> float:
@@ -56,6 +62,45 @@ def _draw_glow_orb(
     return Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
 
 
+def _apply_vignette(image: Image.Image, strength: float = 0.6) -> Image.Image:
+    width, height = image.size
+    vign = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(vign)
+    maxrad = math.hypot(width / 2, height / 2)
+    for y in range(height):
+        for x in range(width):
+            d = math.hypot(x - width / 2, y - height / 2)
+            v = int(255 * (1 - min(1.0, (d / maxrad) ** (1.2 / max(0.01, strength)))))
+            vign.putpixel((x, y), v)
+    return ImageChops.multiply(image.convert("RGB"), Image.merge("RGB", (vign, vign, vign)))
+
+
+def _add_nebula(image: Image.Image, seed: int, tint: Tuple[int, int, int], blobs: int = 6) -> Image.Image:
+    rng = random.Random(seed ^ 0x9E3779B9)
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    w, h = image.size
+    for i in range(blobs):
+        rx = int(rng.uniform(0.2, 0.8) * w)
+        ry = int(rng.uniform(0.2, 0.8) * h)
+        rw = int(rng.uniform(0.2, 0.6) * w)
+        rh = int(rng.uniform(0.08, 0.3) * h)
+        color = tuple(min(255, int(t * rng.uniform(0.6, 1.2))) for t in tint)
+        alpha = int(rng.uniform(30, 90))
+        draw.ellipse((rx - rw, ry - rh, rx + rw, ry + rh), fill=(*color, alpha))
+    blurred = overlay.filter(ImageFilter.GaussianBlur(radius=rw * 0.08))
+    return Image.alpha_composite(image.convert("RGBA"), blurred).convert("RGB")
+
+
+def _add_grain(image: Image.Image, amount: float = 0.06, seed: int = 0) -> Image.Image:
+    rng = random.Random(seed)
+    w, h = image.size
+    arr = np.array(image).astype(np.int16)
+    grain = (np.random.RandomState(rng.randint(0, 2 ** 31 - 1)).randint(-30, 30, size=(h, w, 1))).astype(np.int16)
+    arr = np.clip(arr + (grain * amount), 0, 255).astype(np.uint8)
+    return Image.fromarray(arr)
+
+
 def _get_font(size: int) -> ImageFont.FreeTypeFont:
     candidates = [
         "C:/Windows/Fonts/segoeui.ttf",
@@ -101,42 +146,83 @@ def generate_scene_image(
     width: int = 1920,
     height: int = 1080,
 ) -> Path:
-    """Generate a cinematic scene plate for production rendering.
+    """Generate a cinematic scene plate with style variation.
 
-    Visual variation is derived from the actual scene content. Scene narration is
-    intentionally not baked into the plate; subtitles are rendered downstream.
+    The generator now supports multiple styles (starfield, nebula, minimal,
+    painterly). Variation is still deterministic from content so reruns are
+    reproducible, but different scripts/content produce distinct plates.
     """
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     seed = _content_seed(scene_index, title, text)
+    rng = random.Random(seed)
+
+    # Choose a palette and a visual style deterministically
     palette = PALETTES[seed % len(PALETTES)]
+    style = seed % 4  # 0..3 styles
+
+    # base gradient
     image = _gradient(width, height, palette["top"], palette["bottom"])
     draw = ImageDraw.Draw(image)
 
-    _draw_stars(draw, width, height, 180 + (seed % 120), seed=seed)
+    if style == 0:
+        # Classic starfield + glow orb (original behavior)
+        _draw_stars(draw, width, height, 180 + (seed % 120), seed=seed)
+        cx = width // 2 + int(120 * math.sin(seed * 0.00017))
+        cy = height // 2 + int(80 * math.cos(seed * 0.00013))
+        radius = 240 + (seed % 120)
+        image = _draw_glow_orb(image, cx, cy, radius, palette["accent"])  # type: ignore[arg-type]
 
-    cx = width // 2 + int(120 * math.sin(seed * 0.00017))
-    cy = height // 2 + int(80 * math.cos(seed * 0.00013))
-    radius = 240 + (seed % 120)
-    image = _draw_glow_orb(image, cx, cy, radius, palette["accent"])
+    elif style == 1:
+        # Nebula-forward: fewer stars, colorful nebula blobs
+        _draw_stars(draw, width, height, 90 + (seed % 80), seed=seed)
+        tint = palette["accent"]
+        image = _add_nebula(image, seed, tint, blobs=6)
+        # subtle central glow
+        cx = int(width * rng.uniform(0.45, 0.55))
+        cy = int(height * rng.uniform(0.35, 0.55))
+        radius = int(180 + (seed % 160) * 0.6)
+        image = _draw_glow_orb(image, cx, cy, radius, tuple(int(c * 0.9) for c in tint))  # type: ignore[arg-type]
 
+    elif style == 2:
+        # Minimal/graphic: geometric accents, low star density
+        _draw_stars(draw, width, height, 60 + (seed % 60), seed=seed)
+        # draw large diagonal light band
+        band = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        bd = ImageDraw.Draw(band)
+        band_color = tuple(int(c * 0.25) for c in palette["accent"]) + (100,)
+        bd.polygon([(0, height * 0.6), (width * 0.6, 0), (width, 0), (0, height)], fill=band_color)
+        band = band.filter(ImageFilter.GaussianBlur(radius=80))
+        image = Image.alpha_composite(image.convert("RGBA"), band).convert("RGB")
+
+    else:
+        # Painterly: multiple layered glow orbs and increased grain
+        _draw_stars(draw, width, height, 140 + (seed % 100), seed=seed)
+        for i in range(3):
+            cx = int(width * rng.uniform(0.3, 0.7)) + int((i - 1) * 80)
+            cy = int(height * rng.uniform(0.3, 0.6)) + int((i - 1) * 40)
+            radius = int(120 + (seed % 200) * (0.5 + i * 0.2))
+            tint = tuple(min(255, int(math.floor(c * (0.6 + i * 0.2)))) for c in palette["accent"])  # type: ignore[index]
+            image = _draw_glow_orb(image, cx, cy, radius, tint)  # type: ignore[arg-type]
+        image = _add_nebula(image, seed ^ 0xC0FFEE, tuple(min(255, int(c * 1.1)) for c in palette["accent"]))
+
+    # decorative lines (kept but varied)
     draw = ImageDraw.Draw(image)
+    line_count = 1 + (seed % 3)
+    for i in range(line_count):
+        y = int(height * (0.12 + i * 0.03)) + rng.randint(-6, 6)
+        draw.line([(0, y), (width, y + 40)], fill=palette["accent"], width=1)
 
-    for i in range(3):
-        y = int(height * (0.15 + i * 0.02))
-        draw.line(
-            [(0, y), (width, y + 40)],
-            fill=palette["accent"],
-            width=1,
-        )
+    # Optionally add a small badge only on the title card; for scenes keep minimal
+    # We no longer bake a fixed "AURELIA MAKER" badge into every scene plate.
 
-    # No title/narration is baked into scene plates. The subtitle track is the
-    # single text layer for the rendered episode.
-    badge = f"AURELIA MAKER  ·  SCENE {scene_index + 1:02d}"
-    draw.text((80, 60), badge, fill=palette["accent"], font=_get_font(28))
+    # Post-process: blur, grain, vignette (amount varies by seed)
+    image = image.filter(ImageFilter.GaussianBlur(radius=0.2 + (seed % 7) * 0.05))
+    image = _add_grain(image, amount=0.04 + ((seed % 5) * 0.01), seed=seed)
+    if (seed % 3) != 0:
+        image = _apply_vignette(image, strength=0.6)
 
-    image = image.filter(ImageFilter.GaussianBlur(radius=0.3))
     image.save(output_path, "PNG", optimize=True)
     return output_path
 
@@ -148,16 +234,22 @@ def generate_title_card(
     width: int = 1920,
     height: int = 1080,
 ) -> Path:
-    """Generate opening title card."""
+    """Generate opening title card with subtle variation based on title text."""
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    image = _gradient(width, height, (2, 4, 18), (12, 8, 40))
-    draw = ImageDraw.Draw(image)
-    _draw_stars(draw, width, height, 300, seed=13)
+    seed = int(hashlib.sha256(title.encode("utf-8") + subtitle.encode("utf-8") + b"::title").hexdigest()[:16], 16)
+    rng = random.Random(seed)
+    palette = PALETTES[seed % len(PALETTES)]
 
-    image = _draw_glow_orb(image, width // 2, height // 2 - 40, 400, (80, 140, 255))
+    image = _gradient(width, height, palette["top"], palette["bottom"])
     draw = ImageDraw.Draw(image)
+    _draw_stars(draw, width, height, 220 + (seed % 120), seed=seed)
+
+    # Choose a decorative glow position so titles differ
+    cx = int(width * rng.uniform(0.4, 0.6))
+    cy = int(height * rng.uniform(0.35, 0.55))
+    image = _draw_glow_orb(image, cx, cy, 320 + (seed % 200), palette["accent"])  # type: ignore[arg-type]
 
     title_font = _get_font(96)
     sub_font = _get_font(42)
@@ -171,6 +263,11 @@ def generate_title_card(
         sw = bbox[2] - bbox[0]
         draw.text(((width - sw) // 2, height // 2 + 60), subtitle, fill=(180, 200, 255), font=sub_font)
 
+    # Small scene-badge on title is acceptable; keep it subtle
+    badge = f"AURELIA MAKER  ·  {subtitle}" if subtitle else "AURELIA MAKER"
+    draw.text((80, 60), badge, fill=tuple(min(255, int(c * 0.9)) for c in palette["accent"]), font=_get_font(22))
+
+    image = image.filter(ImageFilter.GaussianBlur(radius=0.2))
     image.save(output_path, "PNG", optimize=True)
     return output_path
 

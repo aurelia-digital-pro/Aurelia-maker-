@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import statistics
+import tempfile
 from pathlib import Path
 
 from .ffmpeg_util import ffmpeg_binary, run_ffmpeg, run_ffprobe
@@ -132,4 +135,95 @@ def validate_master(path: str | Path, min_duration: float = 5.0) -> dict:
     return {"passed": all(checks.values()), "checks": checks, "duration": duration}
 
 
-__all__ = ["concat_clips", "mix_narration_and_music", "apply_color_grade", "burn_subtitles", "master_encode", "generate_ambient_music", "probe_duration", "probe_has_audio", "validate_master"]
+def validate_visual_manifest(path: str | Path, expected_scene_count: int | None = None, source_text_sha256: str | None = None) -> dict:
+    """Validate provenance and reject known template/procedural visual sources."""
+    manifest_path = Path(path)
+    checks = {
+        "manifest_exists": manifest_path.is_file(),
+        "backend_is_local_ai": False,
+        "source_is_chat": False,
+        "source_binding_valid": source_text_sha256 is None,
+        "scenes_present": False,
+        "scene_assets_valid": False,
+        "scene_assets_match_manifest": False,
+        "template_contamination": False,
+        "ui_contamination": False,
+        "watermark_contamination": False,
+        "assets_have_visual_signal": False,
+        "enhancement_recorded": False,
+    }
+    scenes: list[dict] = []
+    if checks["manifest_exists"]:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            checks["backend_is_local_ai"] = manifest.get("backend") == "local-ai"
+            checks["source_is_chat"] = manifest.get("source") == "chat"
+            checks["source_binding_valid"] = source_text_sha256 is None or manifest.get("source_text_sha256") == source_text_sha256
+            scenes = manifest.get("scenes", [])
+            checks["scenes_present"] = bool(scenes)
+            checks["scene_assets_valid"] = all(
+                isinstance(scene.get("asset"), str)
+                and Path(scene["asset"]).is_file()
+                and Path(scene["asset"]).stat().st_size > 1000
+                and bool(scene.get("text_sha256"))
+                for scene in scenes
+            )
+            try:
+                from PIL import Image, ImageStat
+                signals = []
+                for scene in scenes:
+                    with Image.open(scene["asset"]) as image:
+                        stat = ImageStat.Stat(image.convert("RGB"))
+                        signals.append((image.width >= 256 and image.height >= 256, max(stat.mean) - min(stat.mean) >= 8, statistics.fmean(stat.stddev) >= 4))
+                checks["assets_have_visual_signal"] = bool(signals) and all(all(signal) for signal in signals)
+            except (KeyError, OSError, ValueError):
+                checks["assets_have_visual_signal"] = False
+            existing = [scene for scene in scenes if Path(scene.get("asset", "")).is_file()]
+            checks["scene_assets_match_manifest"] = (
+                len(existing) == len(scenes)
+                and all(
+                    hashlib.sha256(Path(scene["asset"]).read_bytes()).hexdigest() == scene.get("asset_sha256")
+                    for scene in scenes
+                )
+            )
+            asset_names = " ".join(str(scene.get("asset", "")).lower() for scene in scenes)
+            scene_text = json.dumps(manifest, ensure_ascii=False).lower()
+            forbidden = ("asset_generator", "title_card", "star-field", "star_field", "scene ", "aurelia maker", "watermark", "logo", "ui")
+            checks["template_contamination"] = not any(token in asset_names or token in scene_text for token in forbidden)
+            checks["ui_contamination"] = not any(token in scene_text for token in ("ui", "prompt", "source text", "overlay"))
+            checks["watermark_contamination"] = not any(token in scene_text for token in ("watermark", "logo"))
+            checks["enhancement_recorded"] = manifest.get("visual_processing", {}).get("motion_renderer") == "CinematicVisualEngine"
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+    if expected_scene_count is not None:
+        checks["scene_count_matches_plan"] = len(scenes) == expected_scene_count
+    return {"passed": all(checks.values()), "checks": checks, "scene_count": len(scenes)}
+
+
+def inspect_final_video_visuals(video: str | Path) -> dict:
+    """Inspect representative frames so a valid container cannot hide a blank template."""
+    video_path = _require_file(video, "Final video")
+    duration = probe_duration(video_path)
+    checks = {"frames_inspected": True, "frames_have_signal": True, "frames_are_not_near_black": True}
+    frame_count = 0
+    with tempfile.TemporaryDirectory(prefix="aurelia-qc-") as temp_dir:
+        for index, fraction in enumerate((0.15, 0.5, 0.85)):
+            frame = Path(temp_dir) / f"frame-{index}.png"
+            result = run_ffmpeg(["-y", "-hide_banner", "-loglevel", "error", "-ss", f"{duration * fraction:.3f}", "-i", str(video_path), "-frames:v", "1", str(frame)])
+            if result.returncode != 0 or not frame.is_file():
+                checks["frames_inspected"] = False
+                continue
+            try:
+                from PIL import Image, ImageStat
+                with Image.open(frame) as image:
+                    stat = ImageStat.Stat(image.convert("RGB"))
+                    checks["frames_have_signal"] = checks["frames_have_signal"] and statistics.fmean(stat.stddev) >= 3
+                    checks["frames_are_not_near_black"] = checks["frames_are_not_near_black"] and statistics.fmean(stat.mean) >= 8
+                frame_count += 1
+            except (OSError, ValueError):
+                checks["frames_inspected"] = False
+    checks["frames_inspected"] = checks["frames_inspected"] and frame_count == 3
+    return {"passed": all(checks.values()), "checks": checks, "frame_count": frame_count}
+
+
+__all__ = ["concat_clips", "mix_narration_and_music", "apply_color_grade", "burn_subtitles", "master_encode", "generate_ambient_music", "probe_duration", "probe_has_audio", "validate_master", "validate_visual_manifest"]

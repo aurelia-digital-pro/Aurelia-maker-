@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -9,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .asset_generator import generate_scene_image, generate_title_card
+from .ai_visual import generate_scene_image
 from .directing_engine import DirectingEngine
 from .media import (
     apply_color_grade,
@@ -20,6 +21,7 @@ from .media import (
     mix_narration_and_music,
     probe_duration,
     validate_master,
+    validate_visual_manifest,
 )
 from .planner import plan_scenes
 from .tts import synthesize_script
@@ -110,17 +112,47 @@ class EpisodeProduction:
         return scenes
 
     def generate_visual_assets(self) -> list[Path]:
-        self._emit("Generating cinematic visual assets...")
+        self._emit("Generating content-bound local AI visual assets...")
         assets: list[Path] = []
-        title_path = self.dirs["visuals"] / "00_title.png"
-        generate_title_card(self.title, f"Episode {self.episode_id}", title_path)
-        assets.append(title_path)
         for scene in self.scenes:
             path = self.dirs["visuals"] / f"scene_{scene.index + 1:02d}.png"
-            generate_scene_image(scene.index, scene.title, scene.text, path)
+            generate_scene_image(
+                scene.index,
+                scene.title,
+                scene.text,
+                path,
+                direction=scene.direction,
+                width=512,
+                height=512,
+            )
             assets.append(path)
-        if not all(path.exists() and path.stat().st_size > 1000 for path in assets):
-            raise RuntimeError("Visual generation produced an invalid asset")
+        if not assets or not all(path.exists() and path.stat().st_size > 1000 for path in assets):
+            raise RuntimeError("Content-bound visual generation produced no valid scene assets")
+        visual_manifest = {
+            "backend": "local-ai",
+            "episode_id": self.episode_id,
+            "title": self.title,
+            "scenes": [
+                {
+                    "index": scene.index,
+                    "title": scene.title,
+                    "text_sha256": hashlib.sha256(scene.text.encode("utf-8")).hexdigest(),
+                    "asset": str(asset),
+                    "asset_sha256": hashlib.sha256(asset.read_bytes()).hexdigest(),
+                    "direction": scene.direction,
+                }
+                for scene, asset in zip(self.scenes, assets)
+            ],
+        }
+        self.visual_manifest_path = self.root / "visual_manifest.json"
+        visual_manifest["source"] = "chat"
+        visual_manifest["source_text_sha256"] = hashlib.sha256(
+            self.script_path.read_text(encoding="utf-8").strip().encode("utf-8")
+        ).hexdigest()
+        self.visual_manifest_path.write_text(
+            json.dumps(visual_manifest, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         return assets
 
     def synthesize_narration(self, script_text: str) -> Path:
@@ -137,8 +169,8 @@ class EpisodeProduction:
         total_duration = probe_duration(narration_path)
         if total_duration <= 0:
             total_duration = sum(scene.duration for scene in self.scenes) + 8.0
-        intro_duration = 8.0
-        body_duration = max(total_duration - intro_duration, 1.0)
+        intro_duration = 0.0
+        body_duration = max(total_duration, 1.0)
         per_scene = body_duration / max(len(self.scenes), 1)
         lines: list[str] = []
         cue_index = 1
@@ -148,8 +180,6 @@ class EpisodeProduction:
             h = int(seconds // 3600); m = int((seconds % 3600) // 60); s = int(seconds % 60); ms = int((seconds - int(seconds)) * 1000)
             return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-        lines.extend([str(cue_index), f"{fmt(cursor)} --> {fmt(cursor + intro_duration)}", self.title, ""])
-        cue_index += 1; cursor += intro_duration
         for scene in self.scenes:
             end = cursor + per_scene
             snippet = re.sub(r"\s+", " ", scene.text.strip())
@@ -164,11 +194,15 @@ class EpisodeProduction:
         from .visuals import CinematicVisualEngine
         self._emit("Rendering cinematic shots with content-driven camera motion...")
         engine = CinematicVisualEngine(); clips: list[Path] = []
-        title_clip = self.dirs["shots"] / "00_title.mp4"
-        engine.render_motion(assets[0], title_clip, duration=8.0, camera={"movement": "push_in", "zoom_start": 1.0, "zoom_end": 1.12}, lighting={"brightness": 1.05, "contrast": 1.08, "saturation": 1.1})
-        clips.append(title_clip)
-        for scene, asset in zip(self.scenes, assets[1:]):
+        if len(assets) != len(self.scenes):
+            raise RuntimeError("Every planned scene must have exactly one visual asset")
+        for scene, asset in zip(self.scenes, assets):
             out = self.dirs["shots"] / f"scene_{scene.index + 1:02d}.mp4"
+            "visual_processing": {
+                "backend": "local-ai",
+                "motion_renderer": "CinematicVisualEngine",
+                "image_enhancement": "Pillow color and resize processing",
+            },
             direction = scene.direction; camera_plan = direction["camera"]; motion_plan = direction["motion"]; lighting_plan = direction["lighting"]; depth_plan = direction["depth"]
             zoom_start = float(motion_plan.get("start", {}).get("zoom", 1.0)); zoom_end = float(motion_plan.get("end", {}).get("zoom", 1.08))
             key = lighting_plan.get("key") or {}; fill = lighting_plan.get("fill") or {}
@@ -192,6 +226,9 @@ class EpisodeProduction:
             final_tiktok = self.dirs["delivery"] / f"episode-{self.episode_id}-tiktok.mp4"; master_encode(subtitled, final_tiktok, profile="tiktok"); outputs["tiktok"] = final_tiktok
         final_alias = self.dirs["delivery"] / f"episode-{self.episode_id}-FINAL.mp4"; final_alias.write_bytes(final_youtube.read_bytes()); outputs["final"] = final_alias
         qc = validate_master(final_alias, min_duration=30.0)
+        visual_qc = validate_visual_manifest(self.visual_manifest_path, len(self.scenes))
+        qc["visual_content"] = visual_qc
+        qc["passed"] = qc["passed"] and visual_qc["passed"]
         if not qc["passed"]: raise RuntimeError(f"QC failed: {qc}")
         manifest = {"episode_id": self.episode_id, "title": self.title, "duration": probe_duration(final_alias), "outputs": {key: str(path) for key, path in outputs.items()}, "qc": qc, "directing": [scene.direction for scene in self.scenes], "timestamp": time.time()}
         (self.root / "production_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")

@@ -97,7 +97,7 @@ class FactoryRunner:
 
     def run_episode_production(self, job: ProductionJob, script_path: Path, profile: str = "both") -> dict[str, Any]:
         from .delivery import process_delivery
-        from .media import validate_master
+        from .media import inspect_final_video_visuals, validate_master, validate_visual_manifest
 
         script_path = Path(script_path).resolve()
         if not script_path.is_file():
@@ -286,6 +286,11 @@ class FactoryRunner:
             if final is None:
                 raise RuntimeError("QC requires master output")
             qc = validate_master(final, min_duration=30.0)
+            visual_qc = validate_visual_manifest(production.visual_manifest_path, len(production.scenes), source_sha256)
+            frame_qc = inspect_final_video_visuals(final)
+            qc["visual_content"] = visual_qc
+            qc["frame_content"] = frame_qc
+            qc["passed"] = qc["passed"] and visual_qc["passed"] and frame_qc["passed"]
             if not qc["passed"]:
                 raise RuntimeError(f"QC failed: {qc}")
             return {**data, "stage": "QC", "qc": qc}
@@ -295,6 +300,11 @@ class FactoryRunner:
             if final is None:
                 raise RuntimeError("DELIVERY requires the current job's master artifact")
             validation = validate_master(final, min_duration=30.0)
+            visual_qc = validate_visual_manifest(production.visual_manifest_path, len(production.scenes), source_sha256)
+            frame_qc = inspect_final_video_visuals(final)
+            validation["visual_content"] = visual_qc
+            validation["frame_content"] = frame_qc
+            validation["passed"] = validation["passed"] and visual_qc["passed"] and frame_qc["passed"]
             if not validation["passed"]:
                 raise RuntimeError(f"DELIVERY rejected master artifact: {validation}")
             alias = production.dirs["delivery"] / f"episode-{job.episode_id}-FINAL.mp4"
@@ -342,6 +352,11 @@ class FactoryRunner:
         if "final" not in final_outputs:
             raise RuntimeError("Canonical production completed without FINAL MP4")
         final_validation = validate_master(final_outputs["final"], min_duration=30.0)
+        visual_qc = validate_visual_manifest(production.visual_manifest_path, len(production.scenes), source_sha256)
+        frame_qc = inspect_final_video_visuals(final_outputs["final"])
+        final_validation["visual_content"] = visual_qc
+        final_validation["frame_content"] = frame_qc
+        final_validation["passed"] = final_validation["passed"] and visual_qc["passed"] and frame_qc["passed"]
         if not final_validation["passed"]:
             raise RuntimeError(f"FINAL MP4 validation failed: {final_validation}")
 

@@ -5,6 +5,7 @@ python3 -m venv .venv || python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+python -m pip install -r requirements-ai.txt
 # Check ffmpeg
 if ! command -v ffmpeg >/dev/null 2>&1; then
   echo "ffmpeg not found in PATH. Please install ffmpeg (apt, brew, or from ffmpeg.org)"

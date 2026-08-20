@@ -81,8 +81,14 @@ def process_qc(data: dict) -> dict:
     if source_path.stat().st_size == 0:
         raise ValueError("QC rejected empty master artifact")
 
+    from .media import validate_master
+    validation = validate_master(source_path, min_duration=float(data.get("min_duration", 5.0)))
+    if not validation["passed"]:
+        raise ValueError(f"QC rejected invalid master: {validation}")
+
     return {
         "stage": "QC",
         "artifact": str(source_path),
+        "validation": validation,
         "status": "PASSED",
     }

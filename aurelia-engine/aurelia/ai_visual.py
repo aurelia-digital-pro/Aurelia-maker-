@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Any
 
 
+CLIP_MAX_TOKENS = 77
+_VISUAL_NEGATIVE_PROMPT = "text, subtitles, watermark, logo, UI, blurry, distorted, duplicate subjects"
+
+
 def _pipeline():
     import torch
     from diffusers import StableDiffusionPipeline
@@ -36,7 +40,23 @@ def _plan_value(plan: dict[str, Any], *keys: str, default: Any = "") -> Any:
     return default
 
 
-def build_scene_prompt(title: str, description: str, direction: dict[str, Any] | None = None) -> str:
+def _compact_words(value: str, limit: int) -> str:
+    return " ".join(str(value).split()[:limit])
+
+
+def _prompt_token_count(text: str, tokenizer: Any | None) -> int:
+    if tokenizer is None:
+        return len(text.split())
+    return len(tokenizer(text, truncation=False, add_special_tokens=True)["input_ids"])
+
+
+def build_scene_prompt(
+    title: str,
+    description: str,
+    direction: dict[str, Any] | None = None,
+    *,
+    tokenizer: Any | None = None,
+) -> str:
     """Build the exact semantic prompt consumed by the local image model."""
     direction = direction or {}
     environment = str(direction.get("environment", "abstract"))
@@ -60,17 +80,18 @@ def build_scene_prompt(title: str, description: str, direction: dict[str, Any] |
     haze = _plan_value(atmosphere, "haze", default=0.0)
     dust = _plan_value(atmosphere, "dust", default=0.0)
 
-    return (
-        "cinematic documentary still, AURELIA visual language, "
-        "photorealistic, coherent physical environment, natural subject placement, "
-        "deep blacks, subtle gold and blue accents, no text, no watermark, no logo, "
-        f"semantic environment: {environment}, "
-        f"scene meaning: {title}. {description}, "
-        f"cinematography: {framing} framing, {lens}mm lens, {movement} camera movement, "
-        f"depth of field: {dof}, "
-        f"lighting: key {key_color}, fill {fill_color}, rim {rim_color}, "
-        f"atmosphere: fog {fog}, haze {haze}, dust {dust}"
+    concise_title = _compact_words(title, 5)
+    concise_description = _compact_words(description, 10)
+    prompt = (
+        "photorealistic cinematic film still, coherent real location, natural subject, "
+        f"environment {environment}; subject and action: {concise_title}. {concise_description}; "
+        f"{framing} shot, {lens}mm lens, {movement} camera, shallow depth {dof}; "
+        f"lighting {key_color} key and {fill_color} fill, atmospheric {haze} haze; "
+        "no text, no subtitles, no watermark, no logo, no UI"
     )
+    if _prompt_token_count(prompt, tokenizer) > CLIP_MAX_TOKENS:
+        raise ValueError(f"Scene prompt exceeds the CLIP limit ({CLIP_MAX_TOKENS} tokens)")
+    return prompt
 
 
 def _content_seed(title: str, description: str, direction: dict[str, Any] | None = None) -> int:
@@ -124,11 +145,14 @@ def generate_scene_image(
 
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    prompt = build_scene_prompt(title, description, direction)
-    negative = "text, subtitles, narration, watermark, logo, UI, low quality, blurry, distorted, duplicate subjects"
+    pipe = get_pipeline()
+    prompt = build_scene_prompt(title, description, direction, tokenizer=pipe.tokenizer)
+    negative = _VISUAL_NEGATIVE_PROMPT
+    if _prompt_token_count(negative, pipe.tokenizer) > CLIP_MAX_TOKENS:
+        raise RuntimeError("Configured negative prompt exceeds the CLIP token limit")
     generator = torch.Generator(device="cpu").manual_seed(_content_seed(title, description, direction))
 
-    image = get_pipeline()(
+    image = pipe(
         prompt=prompt,
         negative_prompt=negative,
         num_inference_steps=2,
@@ -142,7 +166,9 @@ def generate_scene_image(
 
 
 def _title_font(size: int):
-    """Return a real Unicode-capable font; never fall back to Pillow's Latin-1 bitmap font."""
+    raise RuntimeError("Title-card generation is disabled in production")
+
+    """Legacy helper retained only to give old callers an explicit failure."""
     import os
     import subprocess
     from PIL import ImageFont
@@ -205,7 +231,9 @@ def _title_font(size: int):
 
 
 def generate_title_card(title: str, episode: str, output: str | Path, *, width: int = 512, height: int = 512) -> Path:
-    """Generate a deterministic Unicode-safe title card without replacing the AI scene backend."""
+    raise RuntimeError("Title-card generation is disabled; production must contain scene visuals only")
+
+    """Legacy API retained only to give old callers an explicit failure."""
     from PIL import Image, ImageDraw
 
     output_path = Path(output)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from .ffmpeg_util import ffmpeg_binary, run_ffmpeg, run_ffprobe
@@ -86,7 +87,7 @@ def mix_narration_and_music(video: str | Path, narration: str | Path, output: st
     target_duration = max(30.0, probe_duration(video), probe_duration(narration))
     if music is not None and Path(music).is_file() and Path(music).stat().st_size > 0:
         music = Path(music)
-        _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(video), "-i", str(narration), "-i", str(music), "-filter_complex", f"[1:a]apad=whole_dur={target_duration:.6f},volume=1.0[narr];[2:a]volume=0.18[bgm];[narr][bgm]amix=inputs=2:duration=longest:dropout_transition=2,atrim=duration={target_duration:.6f}[aout]", "-map", "0:v:0", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-t", f"{target_duration:.6f}", str(output_path)], output_path)
+        _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(video), "-i", str(narration), "-i", str(music), "-filter_complex", f"[1:a]apad=whole_dur={target_duration:.6f},volume=1.0[narr];[2:a]volume=0.18[bgm];[narr][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]", "-map", "0:v:0", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-t", f"{target_duration:.6f}", str(output_path)], output_path)
     else:
         _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(video), "-i", str(narration), "-filter_complex", f"[1:a]apad=whole_dur={target_duration:.6f}[aout]", "-map", "0:v:0", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-t", f"{target_duration:.6f}", str(output_path)], output_path)
     return output_path
@@ -100,12 +101,34 @@ def apply_color_grade(source: str | Path, output: str | Path, contrast: float = 
     return output_path
 
 
+def _ffmpeg_safe_subtitle_path(p: Path) -> str:
+    """Return a subtitle filename string escaped for ffmpeg subtitles filter.
+
+    Handles Windows drive letters, backslashes, spaces and single quotes.
+    The returned string is intended to be inserted inside the filter expression
+    subtitles=filename='...'.
+    """
+    p = p.resolve()
+    if os.name == "nt":
+        s = str(p)
+        # Escape backslashes and single quotes for ffmpeg filter expression
+        s = s.replace("\\", "\\\\")
+        s = s.replace("'", "\\'")
+        return s
+    else:
+        s = p.as_posix()
+        # Escape colons and single quotes for ffmpeg filter expression
+        s = s.replace(":", r"\:")
+        s = s.replace("'", r"\'")
+        return s
+
+
 def burn_subtitles(source: str | Path, srt: str | Path, output: str | Path) -> Path:
     source = _require_file(source, "Subtitle source")
     srt_path = _require_file(srt, "Subtitle file").resolve()
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    escaped_srt = srt_path.as_posix().replace(":", r"\:").replace("'", r"\'")
+    escaped_srt = _ffmpeg_safe_subtitle_path(srt_path)
     subtitle_filter = f"subtitles=filename='{escaped_srt}':force_style='FontSize=28,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=2,MarginV=40'"
     _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(source), "-vf", subtitle_filter, "-c:v", "libx264", "-preset", "medium", "-crf", "17", "-c:a", "copy", "-pix_fmt", "yuv420p", str(output_path)], output_path)
     return output_path
@@ -128,7 +151,7 @@ def generate_ambient_music(duration_sec: float, output: str | Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     AudioSegment.converter = ffmpeg_binary()
     duration_ms = int(max(duration_sec, 5) * 1000)
-    mixed = Sine(55).to_audio_segment(duration=duration_ms).apply_gain(-22).overlay(Sine(110).to_audio_segment(duration=duration_ms).apply_gain(-26)).overlay(Sine(165).to_audio_segment(duration=duration_ms).apply_gain(-30)).fade_in(2000).fade_out(3000)
+    mixed = Sine(55).to_audio_segment(duration=duration_ms).apply_gain(-22).overlay(Sine(110).to_audio_segment(duration=duration_ms).apply_gain(-26)).overlay(Sine(165).to_audio_segment(duration=duration_ms).apply_gain(-28))
     mixed.export(str(output_path), format="wav")
     _require_file(output_path, "Generated music")
     return output_path

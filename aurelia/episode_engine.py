@@ -93,6 +93,8 @@ class EpisodeProduction:
             self.title = self._extract_title(self.script_path.read_text(encoding="utf-8"))
         # Provenance path for visual manifest
         self.visual_manifest_path = self.dirs["visuals"] / "visual_manifest.json"
+        # Total visual assets written (shots, not scenes) — set in generate_visual_assets
+        self._total_visual_assets: int = 0
 
     @staticmethod
     def _extract_title(request_text: str) -> str:
@@ -215,6 +217,7 @@ class EpisodeProduction:
         """Generate one image per SHOT using visual_backend (SD → Pillow fallback).
 
         Every fallback is logged. No silent degradation.
+        Sets self._total_visual_assets = total number of images generated.
         Returns dict: scene_index_str → list[Path]
         """
         self._emit("Generating visual assets — one image per shot via visual_backend...")
@@ -268,21 +271,27 @@ class EpisodeProduction:
                     if prov["fallback"]:
                         total_fallbacks += 1
                         self._emit(
-                            f"  [VISUAL][FALLBACK] Scene {scene.index+1} shot {shot_idx}: "
-                            f"{prov['fallback_reason']}"
+                            f"  [VISUAL][FALLBACK] Scene {scene.index+1} "
+                            f"shot {shot_idx}: {prov['fallback_reason']}"
                         )
                     shot_paths.append(path)
-                    manifest_scenes.append(self._manifest_record(scene, shot_idx, path, prov))
+                    manifest_scenes.append(
+                        self._manifest_record(scene, shot_idx, path, prov)
+                    )
                     total_images += 1
 
             scene_assets[str(scene.index)] = shot_paths
 
-        # Write visual manifest
-        manifest = {
+        self._total_visual_assets = total_images
+        self._emit(
+            f"Visual assets: {total_images} images, {total_fallbacks} Pillow fallbacks "
+            f"({total_fallbacks/max(total_images,1)*100:.0f}%)"
+        )
+
+        manifest: dict[str, Any] = {
             "backend": "local-ai",
             "source": "chat",
             "run_id": self._run_id,
-            "episode_id": self.episode_id,
             "total_images": total_images,
             "total_fallbacks": total_fallbacks,
             "fallback_rate": round(total_fallbacks / max(total_images, 1), 3),
@@ -292,10 +301,7 @@ class EpisodeProduction:
         self.visual_manifest_path.write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        self._emit(
-            f"Visual assets: {total_images} images, {total_fallbacks} fallbacks "
-            f"({100*total_fallbacks//max(total_images,1)}% fallback rate)"
-        )
+        self._emit(f"Visual manifest written: {self.visual_manifest_path}")
         return scene_assets
 
     @staticmethod
@@ -303,34 +309,31 @@ class EpisodeProduction:
         scene: ScenePlan, shot_idx: int, path: Path, prov: dict[str, Any]
     ) -> dict[str, Any]:
         """Build one manifest entry for a generated visual."""
-        sha = ""
-        if path.is_file():
-            sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        sha = hashlib.sha256(path.read_bytes()).hexdigest()
         return {
             "scene_index": scene.index,
             "shot_index":  shot_idx,
+            "title":       scene.title,
             "asset":       str(path.resolve()),
             "asset_sha256": sha,
             "text_sha256": hashlib.md5(scene.text.encode()).hexdigest(),
             "backend":     prov.get("backend", "unknown"),
             "fallback":    prov.get("fallback", False),
             "fallback_reason": prov.get("fallback_reason", ""),
+            "prompt":      prov.get("prompt", ""),
             "seed":        prov.get("seed", 0),
-            "prompt":      prov.get("prompt", "")[:200],
-            "elapsed_s":   prov.get("elapsed_s", 0),
+            "elapsed_s":   prov.get("elapsed_s", 0.0),
         }
 
     def synthesize_narration(self, script_text: str) -> Path:
-        self._emit(f"Synthesizing narration (language={self.language})...")
+        self._emit("Synthesizing narration (TTS)...")
         narration_path = self.dirs["audio"] / "narration.wav"
-        synthesize_script(script_text, narration_path)
-        if not narration_path.exists() or narration_path.stat().st_size < 1000:
-            raise RuntimeError("Narration synthesis failed")
-        narration_duration = probe_duration(narration_path)
-        self._emit(
-            f"Narration ready: {narration_path.stat().st_size} bytes, "
-            f"{narration_duration:.1f}s"
-        )
+        language = self.language if self.language != "auto" else "en"
+        synthesize_script(script_text, narration_path, language=language)
+        if not narration_path.exists() or narration_path.stat().st_size < 100:
+            raise RuntimeError("Narration synthesis failed — TTS produced no output")
+        duration = probe_duration(narration_path)
+        self._emit(f"Narration: {duration:.1f}s | language={language}")
         return narration_path
 
     def build_subtitles(self, narration_path: Path) -> Path:
@@ -487,15 +490,28 @@ class EpisodeProduction:
             planned_duration_s=planned_dur,
             scene_count=len(self.scenes),
         )
-        visual_qc = validate_visual_manifest(self.visual_manifest_path, len(self.scenes))
+
+        # validate_visual_manifest expects TOTAL ASSET COUNT (shots), not scene count
+        # Use self._total_visual_assets set in generate_visual_assets
+        total_assets = self._total_visual_assets or None  # None skips count check
+        visual_qc = validate_visual_manifest(
+            self.visual_manifest_path,
+            expected_asset_count=total_assets,
+        )
         qc["visual_content"] = visual_qc
         if qc["warnings"]:
             for w in qc["warnings"]:
-                self._emit(f"[QC][WARNING] {w['message']}")
+                self._emit(f"[QC][WARNING] check={w['name']} msg={w['message']}")
         if qc["delivery_blocked"] or not visual_qc["passed"]:
+            mp4_fatal_msgs = [f"{c['name']}: {c['message']}" for c in qc["fatals"]]
+            visual_failed = visual_qc.get("failed_checks", [])
+            visual_details = visual_qc.get("check_details", {})
             raise RuntimeError(
-                f"QC FATAL: {[c['message'] for c in qc['fatals']]} "
-                f"visual_qc={visual_qc['passed']}"
+                f"QC FATAL —"
+                f" mp4_fatals={mp4_fatal_msgs}"
+                f" visual_qc_passed={visual_qc['passed']}"
+                f" visual_failed_checks={visual_failed}"
+                f" visual_details={visual_details}"
             )
 
         manifest = {
@@ -504,8 +520,10 @@ class EpisodeProduction:
             "language": self.language,
             "run_id": self._run_id,
             "duration": probe_duration(final_alias),
+            "planned_duration": planned_dur,
             "outputs": {key: str(path) for key, path in outputs.items()},
             "qc": qc,
+            "visual_qc": visual_qc,
             "directing": [scene.direction for scene in self.scenes],
             "analyses": [scene.analysis for scene in self.scenes],
             "timestamp": time.time(),

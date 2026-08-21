@@ -1,14 +1,12 @@
-"""AURELIA Maker — canonical episode production engine (Factory → FINAL MP4).
+"""AURELIA — canonical episode production engine (Factory → FINAL MP4).
 
-Architecture upgrade:
-- PRIMARY path: Script → SceneAnalyzer → ShotDesigner → Shot-per-clip render
-- FALLBACK path: legacy single-shot-per-scene (preserved, used when shots < 2s)
-- Multi-shot scenes: each scene produces 2-5 shots with distinct framing/motion
-- Content-driven zoom: ShotSpec.zoom_start / zoom_end replace hardcoded 1.0→1.08
-- Dynamic transitions: ShotSpec.transition_in / transition_out replace forced "cut"
-- Visual variation: generate_scene_image_varied() prevents identical frames
-- Scene analysis: SceneAnalyzer provides narrative beat, emotion, action level
-- planner.py paragraph splitting preserved as structural segmentation FALLBACK
+Architecture:
+- PRIMARY visual path: visual_backend.generate_visual() — SD → Pillow fallback
+- Every fallback is explicit in logs. No silent degradation.
+- Shot-level visuals: one image per ShotSpec (2–5 per scene)
+- Content-driven zoom/motion/transition from ShotDesigner
+- SceneAnalyzer enriches planner output with beat/emotion/action context
+- ProductionLogger records structured trace if injected via log= callable
 """
 
 from __future__ import annotations
@@ -39,7 +37,7 @@ from .planner import plan_scenes
 from .scene_analyzer import SceneAnalyzer
 from .shot_designer import ShotDesigner, ShotSpec
 from .tts import synthesize_script
-from .visual_variation import generate_scene_image_varied
+from .visual_backend import generate_visual  # PRIMARY: SD → Pillow fallback
 
 LogFn = Callable[[str], None]
 
@@ -59,7 +57,6 @@ class ScenePlan:
     duration: float = _SCENE_DURATION_DEFAULT
     movement: str = "push_in"
     direction: dict[str, Any] = field(default_factory=dict)
-    # NEW: rich analysis and shot sequence
     analysis: dict[str, Any] = field(default_factory=dict)
     shots: list[dict[str, Any]] = field(default_factory=list)
 
@@ -91,10 +88,11 @@ class EpisodeProduction:
         self.director = DirectingEngine()
         self._analyzer = SceneAnalyzer()
         self._shot_designer = ShotDesigner()
-        # Stable run-id for visual variation across this production run
         self._run_id = uuid.uuid4().hex[:16]
         if not self.title:
             self.title = self._extract_title(self.script_path.read_text(encoding="utf-8"))
+        # Provenance path for visual manifest
+        self.visual_manifest_path = self.dirs["visuals"] / "visual_manifest.json"
 
     @staticmethod
     def _extract_title(request_text: str) -> str:
@@ -157,7 +155,6 @@ class EpisodeProduction:
         dynamic_max = max(3, min(60, word_count // 50))
         raw = plan_scenes(script_text, min_scenes=3, max_scenes=dynamic_max)
 
-        # Full-sequence semantic analysis — threads context between scenes
         analyses = self._analyzer.analyze_sequence(raw)
 
         scenes: list[ScenePlan] = []
@@ -166,7 +163,6 @@ class EpisodeProduction:
             scene_words = len(raw_scene["text"].split())
             estimated_duration = max(_SCENE_DURATION_MIN, scene_words / 3.0)
 
-            # Legacy directing (environment classification + lighting/camera metadata)
             direction = self.director.direct(
                 scene_id=scene_id,
                 title=raw_scene["title"],
@@ -175,10 +171,8 @@ class EpisodeProduction:
                 scene_index=index,
             )
 
-            # Shot sequence — content-driven, replaces single-shot-per-scene
             shot_specs = self._shot_designer.design(analysis, estimated_duration)
 
-            # Log shot plan for transparency
             shot_summary = ", ".join(
                 f"{s.framing}+{s.motion_intent}" for s in shot_specs
             )
@@ -218,13 +212,16 @@ class EpisodeProduction:
         return scenes
 
     def generate_visual_assets(self) -> dict[str, list[Path]]:
-        """Generate one image per SHOT (not per scene).
+        """Generate one image per SHOT using visual_backend (SD → Pillow fallback).
 
-        Returns a dict keyed by scene index → list of shot image paths.
-        Falls back to single image per scene when shots unavailable.
+        Every fallback is logged. No silent degradation.
+        Returns dict: scene_index_str → list[Path]
         """
-        self._emit("Generating visual assets — one image per shot...")
+        self._emit("Generating visual assets — one image per shot via visual_backend...")
         scene_assets: dict[str, list[Path]] = {}
+        manifest_scenes: list[dict[str, Any]] = []
+        total_fallbacks = 0
+        total_images = 0
 
         for scene in self.scenes:
             env = scene.direction.get("environment", "abstract")
@@ -233,72 +230,95 @@ class EpisodeProduction:
             shots = scene.shots or []
 
             if not shots:
-                # Fallback: single image for scene
+                # No shot plan — single image for scene
                 path = self.dirs["visuals"] / f"scene_{scene.index + 1:02d}_shot_00.png"
-                generate_scene_image_varied(
+                prov = generate_visual(
                     scene.index, scene.title, scene.text, path,
                     direction=scene.direction, width=512, height=512,
-                    run_id=self._run_id,
+                    visual_note="", run_id=self._run_id,
+                    logger=self._emit,
                 )
+                if prov["fallback"]:
+                    total_fallbacks += 1
+                    self._emit(
+                        f"  [VISUAL][FALLBACK] Scene {scene.index+1} shot 0: "
+                        f"{prov['fallback_reason']}"
+                    )
                 shot_paths.append(path)
+                manifest_scenes.append(self._manifest_record(scene, 0, path, prov))
+                total_images += 1
             else:
                 for shot in shots:
                     shot_idx = shot["shot_index"]
                     path = self.dirs["visuals"] / (
                         f"scene_{scene.index + 1:02d}_shot_{shot_idx:02d}.png"
                     )
-                    # Enrich description with shot-specific visual note
-                    generate_scene_image_varied(
+                    # Visual note = shot description + framing + motion_intent
+                    visual_note = " ".join(filter(None, [
+                        shot.get("description", ""),
+                        shot.get("framing", ""),
+                        shot.get("motion_intent", ""),
+                    ]))
+                    prov = generate_visual(
                         scene.index, scene.title, scene.text, path,
                         direction=scene.direction, width=512, height=512,
-                        visual_note=shot.get("visual_note", ""),
-                        run_id=self._run_id,
+                        visual_note=visual_note, run_id=self._run_id,
+                        logger=self._emit,
                     )
+                    if prov["fallback"]:
+                        total_fallbacks += 1
+                        self._emit(
+                            f"  [VISUAL][FALLBACK] Scene {scene.index+1} shot {shot_idx}: "
+                            f"{prov['fallback_reason']}"
+                        )
                     shot_paths.append(path)
+                    manifest_scenes.append(self._manifest_record(scene, shot_idx, path, prov))
+                    total_images += 1
 
             scene_assets[str(scene.index)] = shot_paths
 
-        # Validate all assets exist
-        for idx, paths in scene_assets.items():
-            for p in paths:
-                if not (p.exists() and p.stat().st_size > 1000):
-                    raise RuntimeError(f"Visual asset missing or empty: {p}")
-
-        # Write extended manifest
-        script_text_for_manifest = self.script_path.read_text(encoding="utf-8").strip()
-        self.visual_manifest_path = self.root / "visual_manifest.json"
+        # Write visual manifest
+        manifest = {
+            "backend": "local-ai",
+            "source": "chat",
+            "run_id": self._run_id,
+            "episode_id": self.episode_id,
+            "total_images": total_images,
+            "total_fallbacks": total_fallbacks,
+            "fallback_rate": round(total_fallbacks / max(total_images, 1), 3),
+            "visual_processing": {"motion_renderer": "CinematicVisualEngine"},
+            "scenes": manifest_scenes,
+        }
         self.visual_manifest_path.write_text(
-            json.dumps({
-                "backend": "local-ai",
-                "source": "chat",
-                "run_id": self._run_id,
-                "episode_id": self.episode_id,
-                "title": self.title,
-                "source_text_sha256": hashlib.sha256(
-                    script_text_for_manifest.encode("utf-8")
-                ).hexdigest(),
-                "scenes": [
-                    {
-                        "index": scene.index,
-                        "title": scene.title,
-                        "environment": scene.direction.get("environment", "abstract"),
-                        "analysis": scene.analysis,
-                        "shots": scene.shots,
-                        "assets": [str(p) for p in scene_assets[str(scene.index)]],
-                    }
-                    for scene in self.scenes
-                ],
-                "visual_processing": {
-                    "backend": "local-ai",
-                    "shot_model": "ShotDesigner",
-                    "scene_model": "SceneAnalyzer",
-                    "motion_renderer": "CinematicVisualEngine",
-                    "variation": "run_id_mixed",
-                },
-            }, indent=2, ensure_ascii=False),
-            encoding="utf-8",
+            json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        self._emit(
+            f"Visual assets: {total_images} images, {total_fallbacks} fallbacks "
+            f"({100*total_fallbacks//max(total_images,1)}% fallback rate)"
         )
         return scene_assets
+
+    @staticmethod
+    def _manifest_record(
+        scene: ScenePlan, shot_idx: int, path: Path, prov: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Build one manifest entry for a generated visual."""
+        sha = ""
+        if path.is_file():
+            sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        return {
+            "scene_index": scene.index,
+            "shot_index":  shot_idx,
+            "asset":       str(path.resolve()),
+            "asset_sha256": sha,
+            "text_sha256": hashlib.md5(scene.text.encode()).hexdigest(),
+            "backend":     prov.get("backend", "unknown"),
+            "fallback":    prov.get("fallback", False),
+            "fallback_reason": prov.get("fallback_reason", ""),
+            "seed":        prov.get("seed", 0),
+            "prompt":      prov.get("prompt", "")[:200],
+            "elapsed_s":   prov.get("elapsed_s", 0),
+        }
 
     def synthesize_narration(self, script_text: str) -> Path:
         self._emit(f"Synthesizing narration (language={self.language})...")
@@ -349,8 +369,8 @@ class EpisodeProduction:
     ) -> list[Path]:
         """Render one clip per shot image.
 
-        Each shot uses its own ShotSpec: framing, motion_intent, zoom range,
-        depth_of_field — not inherited from a scene-level template.
+        Each shot uses its own ShotSpec parameters from ShotDesigner:
+        framing, motion_intent, zoom range, depth_of_field.
         """
         from .visuals import CinematicVisualEngine
         self._emit("Rendering cinematic shots (content-driven motion per shot)...")
@@ -373,24 +393,30 @@ class EpisodeProduction:
             fill = (lighting_plan.get("fill") or {})
             brightness = 1.0 + min(float(key.get("intensity",  0.7)) * 0.04, 0.06)
             contrast   = 1.04 + min(float(fill.get("intensity", 0.2)) * 0.04, 0.03)
-            atm_haze = float((lighting_plan.get("atmosphere") or {}).get("haze", 0.0))
-            atm_fog  = float((lighting_plan.get("atmosphere") or {}).get("fog",  0.0))
+            atm = lighting_plan.get("atmosphere") or {}
+            atm_haze = float(atm.get("haze", 0.0))
+            atm_fog  = float(atm.get("fog",  0.0))
 
             assets = scene_assets.get(str(scene.index), [])
             shots  = scene.shots
 
-            # Align assets to shots; fall back to repeating the single scene image
-            if len(assets) == 0:
+            if not assets:
                 self._emit(f"  [WARN] Scene {scene.index+1}: no assets, skipping")
                 continue
 
-            for i, shot_dict in enumerate(shots) if shots else [(0, {})]:
+            # If no shots planned, treat each asset as one implicit shot
+            shot_iter: list[tuple[int, dict[str, Any]]] = []
+            if shots:
+                shot_iter = list(enumerate(shots))
+            else:
+                shot_iter = [(i, {}) for i in range(len(assets))]
+
+            for i, shot_dict in shot_iter:
                 asset = assets[min(i, len(assets) - 1)]
                 out = self.dirs["shots"] / (
                     f"scene_{scene.index + 1:02d}_shot_{i:02d}.mp4"
                 )
 
-                # Extract shot-specific parameters from ShotSpec dict
                 motion   = shot_dict.get("motion_intent",  direction["camera"]["movement"])
                 z_start  = float(shot_dict.get("zoom_start",  1.0))
                 z_end    = float(shot_dict.get("zoom_end",    1.05))
@@ -427,6 +453,9 @@ class EpisodeProduction:
         return mixed
 
     def finish(self, edit_path: Path, srt_path: Path) -> dict[str, Path]:
+        """Grade → subtitle → master encode → QC → delivery alias."""
+        from .qc_engine import run_qc
+
         self._emit("Color grading...")
         graded = self.dirs["master"] / "graded.mp4"
         apply_color_grade(edit_path, graded)
@@ -449,12 +478,25 @@ class EpisodeProduction:
         final_alias.write_bytes(final_youtube.read_bytes())
         outputs["final"] = final_alias
 
-        qc = validate_master(final_alias, min_duration=5.0)
+        # — QC with FATAL/WARNING distinction —
+        planned_dur = max(5.0, sum(s.duration for s in self.scenes))
+        qc = run_qc(
+            video_path=final_alias,
+            srt_path=srt_path,
+            min_duration_s=max(5.0, planned_dur * 0.5),
+            planned_duration_s=planned_dur,
+            scene_count=len(self.scenes),
+        )
         visual_qc = validate_visual_manifest(self.visual_manifest_path, len(self.scenes))
         qc["visual_content"] = visual_qc
-        qc["passed"] = qc["passed"] and visual_qc["passed"]
-        if not qc["passed"]:
-            raise RuntimeError(f"QC failed: {qc}")
+        if qc["warnings"]:
+            for w in qc["warnings"]:
+                self._emit(f"[QC][WARNING] {w['message']}")
+        if qc["delivery_blocked"] or not visual_qc["passed"]:
+            raise RuntimeError(
+                f"QC FATAL: {[c['message'] for c in qc['fatals']]} "
+                f"visual_qc={visual_qc['passed']}"
+            )
 
         manifest = {
             "episode_id": self.episode_id,

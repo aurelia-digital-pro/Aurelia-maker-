@@ -326,14 +326,15 @@ class EpisodeProduction:
         }
 
     def synthesize_narration(self, script_text: str) -> Path:
-        self._emit("Synthesizing narration (TTS)...")
+        """Synthesize narration. TTS auto-detects language from text content."""
+        self._emit(f"Synthesizing narration (TTS, language={self.language})...")
         narration_path = self.dirs["audio"] / "narration.wav"
-        language = self.language if self.language != "auto" else "en"
-        synthesize_script(script_text, narration_path, language=language)
+        # synthesize_script auto-detects ar/en from the text — no language kwarg needed
+        synthesize_script(script_text, narration_path)
         if not narration_path.exists() or narration_path.stat().st_size < 100:
             raise RuntimeError("Narration synthesis failed — TTS produced no output")
         duration = probe_duration(narration_path)
-        self._emit(f"Narration: {duration:.1f}s | language={language}")
+        self._emit(f"Narration: {duration:.1f}s | language={self.language}")
         return narration_path
 
     def build_subtitles(self, narration_path: Path) -> Path:

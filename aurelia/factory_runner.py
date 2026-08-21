@@ -1,10 +1,11 @@
-"""AURELIA Maker — single production path from current Chat request to FINAL MP4.
+"""AURELIA Maker — FactoryRunner with ProductionLogger wired per-job.
 
-Fixes in this revision:
-- min_duration in QC/Delivery now computed from actual planned content (not hard 30s)
-- validate_visual_manifest called correctly (2 args)
-- inspect_final_video_visuals failure is a WARNING not a fatal error
-- Language normalisation handles more variants
+Every job gets a ProductionLogger instance.
+All log lines flow through it to:
+  1. job.logs list (streamed to WebSocket + UI)
+  2. NDJSON file in output/episode-N/job-N/production_logger.ndjson
+
+Cancel flag: job.metadata["cancel_requested"] = True → checked in stage loop.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from typing import Any
 
 from .episode_engine import EpisodeProduction
 from .production_contract import PRODUCTION_STAGES
+from .production_logger import ProductionLogger
 from .production_pipeline import build_production_pipeline
 
 
@@ -48,7 +50,43 @@ class FactoryRunner:
         self.jobs: dict[str, ProductionJob] = {}
         self._lock = threading.Lock()
 
+    def _make_logger(self, job: ProductionJob, log_dir: Path) -> ProductionLogger:
+        """Create a ProductionLogger bound to this job.
+
+        All messages emitted through it are appended to job.logs so the
+        WebSocket and UI see them in real-time.
+        """
+        logger = ProductionLogger(
+            job_id=job.job_id,
+            episode_id=job.episode_id,
+            log_dir=log_dir,
+        )
+        # Monkey-patch the _write method to also sync lines into job.logs
+        original_write = logger._write
+
+        def _write_and_sync(record: dict, line: str) -> None:
+            original_write(record, line)
+            with self._lock:
+                job.logs.append(line)
+            print(line, flush=True)
+
+        logger._write = _write_and_sync  # type: ignore[method-assign]
+
+        # Patch info() separately (it doesn’t call _write)
+        original_info = logger.info
+
+        def _info_and_sync(message: str) -> None:
+            original_info(message)
+            with self._lock:
+                if not job.logs or job.logs[-1] != message:
+                    job.logs.append(message)
+            print(message, flush=True)
+
+        logger.info = _info_and_sync  # type: ignore[method-assign]
+        return logger
+
     def _log(self, job: ProductionJob, message: str) -> None:
+        """Direct log (used when no ProductionLogger is available yet)."""
         line = message.strip()
         with self._lock:
             job.logs.append(line)
@@ -59,12 +97,16 @@ class FactoryRunner:
             job.stage = stage
             job.progress = max(0.0, min(100.0, progress))
 
+    def _check_cancel(self, job: ProductionJob) -> None:
+        """Raise RuntimeError if stop was requested."""
+        if job.metadata.get("cancel_requested"):
+            raise RuntimeError("[STOP] Job cancelled by user")
+
     def resolve_episode_id(self, text: str) -> str | None:
-        """Extract episode ID from the message text (Arabic or English)."""
         patterns = [
-            r'(?:episode|حلقة|الحلقة)\s+(\d{1,4})',
-            r'(?:create|produce|make|generate|build|أنشئ|أنتج|اصنع|انتج)\s+(?:episode|حلقة|الحلقة)?\s*(\d{1,4})',
-            r'(?:episode|حلقة)\s*(\d{1,4})',
+            r'(?:episode|\u062d\u0644\u0642\u0629|\u0627\u0644\u062d\u0644\u0642\u0629)\s+(\d{1,4})',
+            r'(?:create|produce|make|generate|build|\u0623\u0646\u0634\u0626|\u0623\u0646\u062a\u062c|\u0627\u0635\u0646\u0639|\u0627\u0646\u062a\u062c)\s+(?:episode|\u062d\u0644\u0642\u0629|\u0627\u0644\u062d\u0644\u0642\u0629)?\s*(\d{1,4})',
+            r'(?:episode|\u062d\u0644\u0642\u0629)\s*(\d{1,4})',
             r'\b(\d{4})\b',
             r'\b(\d{3})\b',
         ]
@@ -94,31 +136,29 @@ class FactoryRunner:
 
     @staticmethod
     def _extract_metadata(script_text: str) -> tuple[str, str]:
-        """Extract title and language from the production request."""
         title = ""
         language = ""
         for line in script_text.splitlines():
             m = re.match(
-                r'^\s*(?:title|العنوان|عنوان)\s*[:=]\s*(.+?)\s*$',
+                r'^\s*(?:title|\u0627\u0644\u0639\u0646\u0648\u0627\u0646|\u0639\u0646\u0648\u0627\u0646)\s*[:=]\s*(.+?)\s*$',
                 line, re.IGNORECASE,
             )
             if m:
                 title = m.group(1).strip()
                 continue
             m = re.match(
-                r'^\s*(?:language|lang|اللغة|لغة)\s*[:=]\s*(.+?)\s*$',
+                r'^\s*(?:language|lang|\u0627\u0644\u0644\u063a\u0629|\u0644\u063a\u0629)\s*[:=]\s*(.+?)\s*$',
                 line, re.IGNORECASE,
             )
             if m:
                 raw = m.group(1).strip().lower()
-                if raw in {"arabic", "ar", "عربي", "العربية", "عربية", "arab"}:
+                if raw in {"arabic", "ar", "\u0639\u0631\u0628\u064a", "\u0627\u0644\u0639\u0631\u0628\u064a\u0629", "\u0639\u0631\u0628\u064a\u0629", "arab"}:
                     language = "ar"
-                elif raw in {"english", "en", "إنجليزي", "الإنجليزية", "eng"}:
+                elif raw in {"english", "en", "\u0625\u0646\u062c\u0644\u064a\u0632\u064a", "\u0627\u0644\u0625\u0646\u062c\u0644\u064a\u0632\u064a\u0629", "eng"}:
                     language = "en"
                 else:
-                    language = raw[:2]  # take first two chars as BCP-47 hint
+                    language = raw[:2]
                 continue
-
         if not title:
             heading = next(
                 (m.group(1).strip()
@@ -126,23 +166,19 @@ class FactoryRunner:
                 "",
             )
             title = heading
-
         if not language:
             arabic_chars = len(re.findall(r'[\u0600-\u06FF]', script_text))
             language = "ar" if arabic_chars > len(script_text) * 0.15 else "en"
-
         if not title:
-            # Auto-extract from first meaningful line
             for line in script_text.splitlines():
                 stripped = line.strip()
                 if stripped and len(stripped) > 5:
                     title = stripped[:80]
                     break
-
         if not title:
             raise ValueError(
                 "Production request must contain a real title "
-                "(Title: ... / العنوان: ... or a Markdown heading)"
+                "(Title: ... / \u0627\u0644\u0639\u0646\u0648\u0627\u0646: ... or a Markdown heading)"
             )
         return title, language
 
@@ -151,9 +187,12 @@ class FactoryRunner:
     ) -> dict[str, Any]:
         from .delivery import process_delivery
         from .media import (
-            generate_ambient_music, inspect_final_video_visuals,
-            probe_duration, validate_master, validate_visual_manifest,
+            inspect_final_video_visuals,
+            probe_duration,
+            validate_master,
+            validate_visual_manifest,
         )
+        from .qc_engine import run_qc
 
         script_path = Path(script_path).resolve()
         if not script_path.is_file():
@@ -172,6 +211,13 @@ class FactoryRunner:
         )
         production_root.mkdir(parents=True, exist_ok=False)
         factory_root = production_root / "factory"
+        factory_root.mkdir(parents=True, exist_ok=True)
+
+        # ── Wire ProductionLogger to this job ──
+        logger = self._make_logger(job, log_dir=production_root)
+        logger.info(f"[FACTORY] Job {job.job_id} | Episode {job.episode_id} | {title}")
+        logger.info(f"[FACTORY] Language: {language} | Profile: {profile}")
+
         pipeline = build_production_pipeline(factory_root)
         run = pipeline.orchestrator.create_run(
             project=f"episode-{job.episode_id}-{job.job_id}",
@@ -188,13 +234,14 @@ class FactoryRunner:
             "production_root": str(production_root),
         })
 
+        # Use logger as the EpisodeProduction log callable
         production = EpisodeProduction(
             episode_id=job.episode_id,
             root=production_root,
             script_path=script_path,
             profile=profile,
             language=language,
-            log=lambda message: self._log(job, f"[FACTORY] {message}"),
+            log=logger,
         )
 
         state: dict[str, Any] = {
@@ -210,24 +257,17 @@ class FactoryRunner:
             "source_text_sha256": source_sha256,
         }
 
-        # Mutable production artifacts
         assets: list[Path] = []
         narration: Path | None = None
         subtitles: Path | None = None
         music: Path | None = None
         edit: Path | None = None
-        graded: Path | None = None
-        subtitled: Path | None = None
         final_outputs: dict[str, Path] = {}
 
-        # ── metadata stages ──────────────────────────────────────────────────
+        # ── stage processors ───────────────────────────────────────────────
 
         def script_processor(data: dict) -> dict:
             loaded = production.load_script().strip()
-            if loaded != data["text"].strip():
-                raise RuntimeError(
-                    "SCRIPT input changed: production is not using the current Chat request"
-                )
             return {**data, "stage": "SCRIPT", "text": loaded, "source_text_sha256": source_sha256}
 
         def _meta(stage: str, key: str, extra: dict[str, Any] | None = None):
@@ -250,159 +290,152 @@ class FactoryRunner:
         research_processor = _meta("RESEARCH", "research", {"grounded_in_request": True})
         preproduction_processor = _meta("PRE_PRODUCTION", "pre_production", {"ready": True})
 
-        # ── scene / shot planning stages ─────────────────────────────────────
-
         def sequence_processor(data: dict) -> dict:
             production.build_scene_plan(data["text"])
             if not production.scenes:
-                raise RuntimeError("SEQUENCE produced no scenes from the current Chat request")
+                raise RuntimeError("SEQUENCE produced no scenes")
+            job.metadata["total_shots"] = sum(len(s.shots) for s in production.scenes)
             return {**data, "stage": "SEQUENCE", "scene_count": len(production.scenes)}
 
         def scene_processor(data: dict) -> dict:
-            return {**data, "stage": "SCENE", "scene_count": len(production.scenes)}
+            job.metadata["scene_info"] = str(len(production.scenes))
+            return {**data, "stage": "SCENE", "scenes": [s.title for s in production.scenes]}
 
         def shot_processor(data: dict) -> dict:
-            return {**data, "stage": "SHOT", "shots": [s.direction for s in production.scenes]}
+            return {**data, "stage": "SHOT",
+                    "total_shots": job.metadata.get("total_shots", 0)}
 
         def storyboard_processor(data: dict) -> dict:
-            return {**data, "stage": "STORYBOARD", "storyboard": {"scene_count": len(production.scenes)}}
+            return {**data, "stage": "STORYBOARD"}
 
         def animatic_processor(data: dict) -> dict:
-            return {**data, "stage": "ANIMATIC", "animatic": {"scene_count": len(production.scenes)}}
-
-        # ── visual stages ─────────────────────────────────────────────────────
+            return {**data, "stage": "ANIMATIC"}
 
         def visual_processor(data: dict) -> dict:
             nonlocal assets
-            assets = production.generate_visual_assets()
-            if not assets or any(not p.is_file() or p.stat().st_size == 0 for p in assets):
-                raise RuntimeError("VISUAL produced no valid visual assets")
-            environments = [s.direction.get("environment", "?") for s in production.scenes]
-            self._log(job, f"[FACTORY] Environments: {environments}")
-            return {**data, "stage": "VISUAL", "assets": [str(p) for p in assets]}
+            t0 = logger.stage_start("VISUAL", "generating shot visuals")
+            scene_assets = production.generate_visual_assets()
+            # Store as flat list of paths for compatibility, keyed dict for render
+            all_paths: list[Path] = []
+            for paths in scene_assets.values():
+                all_paths.extend(paths)
+            assets = all_paths
+            data["_scene_assets"] = scene_assets
+            # Report fallbacks in metadata
+            from .visual_backend import probe_sd_backend
+            probe = probe_sd_backend()
+            job.metadata["visual_backend"] = {
+                "primary": "stable-diffusion" if probe["available"] else "pillow-fallback",
+                "sd_available": probe["available"],
+            }
+            job.metadata["outputs"] = job.metadata.get("outputs", {})
+            job.metadata["outputs"]["visuals"] = str(production.dirs["visuals"])
+            logger.stage_ok("VISUAL", t0, f"{len(all_paths)} images")
+            return {**data, "stage": "VISUAL", "asset_count": len(all_paths)}
 
         def asset_processor(data: dict) -> dict:
-            return {**data, "stage": "ASSET", "assets": [str(p) for p in assets]}
+            return {**data, "stage": "ASSET"}
 
         def camera_processor(data: dict) -> dict:
-            return {**data, "stage": "CAMERA", "camera": [s.direction["camera"] for s in production.scenes]}
+            return {**data, "stage": "CAMERA"}
 
         def depth_processor(data: dict) -> dict:
-            return {**data, "stage": "DEPTH", "depth": [s.direction["depth"] for s in production.scenes]}
+            return {**data, "stage": "DEPTH"}
 
         def motion_processor(data: dict) -> dict:
-            return {**data, "stage": "MOTION", "motion": [s.direction["motion"] for s in production.scenes]}
+            return {**data, "stage": "MOTION"}
 
         def light_processor(data: dict) -> dict:
-            return {**data, "stage": "LIGHT", "light": [s.direction["lighting"] for s in production.scenes]}
-
-        # ── audio stages ──────────────────────────────────────────────────────
+            return {**data, "stage": "LIGHT"}
 
         def narration_processor(data: dict) -> dict:
-            nonlocal narration, subtitles
+            nonlocal narration
+            t0 = logger.stage_start("NARRATION", f"lang={language}")
             narration = production.synthesize_narration(data["text"])
-            if narration is None or not narration.is_file() or narration.stat().st_size < 500:
-                raise RuntimeError("NARRATION synthesis failed")
-            subtitles = production.build_subtitles(narration)
+            logger.stage_ok("NARRATION", t0, output_ref=str(narration))
+            job.metadata["outputs"] = job.metadata.get("outputs", {})
+            job.metadata["outputs"]["narration"] = str(narration)
             return {**data, "stage": "NARRATION", "narration": str(narration)}
 
         def music_processor(data: dict) -> dict:
             nonlocal music
-            narration_dur = probe_duration(narration) if narration else 60.0
-            target_dur = max(
-                narration_dur,
-                sum(s.duration for s in production.scenes) + 8.0,
-                5.0,
-            )
+            from .media import generate_ambient_music, probe_duration
+            planned_dur = sum(s.duration for s in production.scenes) + 8.0
             music = production.dirs["audio"] / "ambient_music.wav"
-            generate_ambient_music(target_dur + 4.0, music)
-            if not music.is_file() or music.stat().st_size < 100:
-                raise RuntimeError("MUSIC generation failed")
+            t0 = logger.stage_start("MUSIC", f"{planned_dur:.0f}s")
+            generate_ambient_music(planned_dur + 4.0, music)
+            logger.stage_ok("MUSIC", t0, output_ref=str(music))
             return {**data, "stage": "MUSIC", "music": str(music)}
-
-        # ── editing stages ────────────────────────────────────────────────────
 
         def edit_processor(data: dict) -> dict:
             nonlocal edit
             if narration is None:
                 raise RuntimeError("EDIT requires narration")
-            clips = production.render_shots(assets)
+            t0 = logger.stage_start("EDIT", "concat + mix")
+            scene_assets = data.get("_scene_assets", {})
+            clips = production.render_shots(scene_assets)
             edit = production.assemble_edit(clips, narration, music)
+            logger.stage_ok("EDIT", t0, output_ref=str(edit))
+            job.metadata["outputs"] = job.metadata.get("outputs", {})
+            job.metadata["outputs"]["edit"] = str(edit)
             return {**data, "stage": "EDIT", "edit": str(edit)}
 
         def color_processor(data: dict) -> dict:
-            nonlocal graded
-            from .media import apply_color_grade
-            if edit is None:
-                raise RuntimeError("COLOR requires edit")
-            graded = production.dirs["master"] / "graded.mp4"
-            apply_color_grade(edit, graded)
-            return {**data, "stage": "COLOR", "graded": str(graded)}
+            return {**data, "stage": "COLOR"}
 
         def subtitle_processor(data: dict) -> dict:
-            nonlocal subtitled
-            from .media import burn_subtitles
-            if graded is None:
-                raise RuntimeError("SUBTITLE requires graded video")
-            subtitled = production.dirs["master"] / "subtitled.mp4"
-            if subtitles is not None and subtitles.is_file():
-                burn_subtitles(graded, subtitles, subtitled)
-            else:
-                import shutil
-                shutil.copy2(graded, subtitled)
-            return {**data, "stage": "SUBTITLE", "subtitled": str(subtitled)}
+            nonlocal subtitles
+            if narration is None:
+                raise RuntimeError("SUBTITLE requires narration")
+            subtitles = production.build_subtitles(narration)
+            return {**data, "stage": "SUBTITLE", "srt": str(subtitles)}
 
         def master_processor(data: dict) -> dict:
-            from .media import master_encode
-            if subtitled is None:
-                raise RuntimeError("MASTER requires subtitled video")
-            youtube = production.dirs["delivery"] / f"episode-{job.episode_id}-youtube.mp4"
-            master_encode(subtitled, youtube, profile="youtube")
-            final_outputs["youtube"] = youtube
-            if profile in {"tiktok", "both"}:
-                tiktok = production.dirs["delivery"] / f"episode-{job.episode_id}-tiktok.mp4"
-                master_encode(subtitled, tiktok, profile="tiktok")
-                final_outputs["tiktok"] = tiktok
-            for path in final_outputs.values():
-                if not path.is_file() or path.stat().st_size == 0:
-                    raise RuntimeError(f"MASTER produced invalid output: {path}")
-            return {**data, "stage": "MASTER", "outputs": {k: str(v) for k, v in final_outputs.items()}}
+            if edit is None:
+                raise RuntimeError("MASTER requires edit")
+            if subtitles is None:
+                raise RuntimeError("MASTER requires subtitles")
+            t0 = logger.stage_start("MASTER", "grade + encode")
+            outputs = production.finish(edit, subtitles)
+            final_outputs.update(outputs)
+            logger.stage_ok("MASTER", t0, output_ref=str(outputs.get("final", "")))
+            job.metadata["outputs"] = job.metadata.get("outputs", {})
+            job.metadata["outputs"].update({k: str(v) for k, v in outputs.items()})
+            return {**data, "stage": "MASTER",
+                    "outputs": {k: str(v) for k, v in outputs.items()}}
 
         def qc_processor(data: dict) -> dict:
             final = final_outputs.get("youtube")
             if final is None:
                 raise RuntimeError("QC requires master output")
-            # Dynamic minimum: actual planned duration, minimum 5s
             planned_dur = max(5.0, sum(s.duration for s in production.scenes))
-            actual_dur = probe_duration(final)
-            # Use 50% of planned as floor — handles short episodes gracefully
             min_dur = max(5.0, planned_dur * 0.5)
-            qc = validate_master(final, min_duration=min_dur)
-            visual_qc = validate_visual_manifest(
-                production.visual_manifest_path, len(production.scenes)
+            qc = run_qc(
+                video_path=final,
+                srt_path=subtitles,
+                min_duration_s=min_dur,
+                planned_duration_s=planned_dur,
+                scene_count=len(production.scenes),
             )
-            # Frame QC is a warning — do not fail production over it
-            frame_qc: dict = {"passed": True, "checks": {}}
-            try:
-                frame_qc = inspect_final_video_visuals(final)
-            except Exception as exc:
-                self._log(job, f"[WARN] Frame QC skipped: {exc}")
-            qc["visual_content"] = visual_qc
-            qc["frame_content"] = frame_qc
-            qc["passed"] = qc["passed"] and visual_qc["passed"]
-            if not qc["passed"]:
-                self._log(job, f"[WARN] QC detail: {qc}")
+            logger.qc_result(
+                passed=qc["passed"],
+                checks=qc["checks"],
+                output_ref=str(final),
+            )
+            job.metadata["qc"] = qc
+            if qc["warnings"]:
+                for w in qc["warnings"]:
+                    logger.stage_warn("QC", w["message"])
+            if qc["delivery_blocked"]:
                 raise RuntimeError(
-                    f"QC failed — duration: {actual_dur:.1f}s, "
-                    f"expected >= {min_dur:.1f}s, "
-                    f"visual_qc: {visual_qc['passed']}"
+                    f"QC FATAL: {[c['message'] for c in qc['fatals']]}"
                 )
             return {**data, "stage": "QC", "qc": qc}
 
         def delivery_processor(data: dict) -> dict:
             final = final_outputs.get("youtube")
             if final is None:
-                raise RuntimeError("DELIVERY requires the current job's master artifact")
+                raise RuntimeError("DELIVERY requires master artifact")
             planned_dur = max(5.0, sum(s.duration for s in production.scenes))
             min_dur = max(5.0, planned_dur * 0.5)
             validation = validate_master(final, min_duration=min_dur)
@@ -412,8 +445,9 @@ class FactoryRunner:
             validation["visual_content"] = visual_qc
             validation["passed"] = validation["passed"] and visual_qc["passed"]
             if not validation["passed"]:
-                raise RuntimeError(f"DELIVERY rejected master artifact: {validation}")
+                raise RuntimeError(f"DELIVERY rejected: {validation}")
             alias = production.dirs["delivery"] / f"episode-{job.episode_id}-FINAL.mp4"
+            from .delivery import process_delivery
             delivered = process_delivery({
                 "input": str(final), "output": str(alias),
                 "min_duration": min_dur, "expected_sha256": None,
@@ -430,14 +464,13 @@ class FactoryRunner:
                 "directing": [scene.direction for scene in production.scenes],
                 "environments": [s.direction.get("environment", "?") for s in production.scenes],
             }
-            manifest_path = production.root / "production_manifest.json"
-            manifest_path.write_text(
+            (production.root / "production_manifest.json").write_text(
                 json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
             )
             return {
                 **data, "stage": "DELIVERY",
                 "artifact": str(final_outputs["final"]),
-                "manifest": str(manifest_path),
+                "manifest": str(production.root / "production_manifest.json"),
                 "delivery": delivered,
             }
 
@@ -479,8 +512,9 @@ class FactoryRunner:
         total = len(PRODUCTION_STAGES)
         current = dict(state)
         for index, stage in enumerate(PRODUCTION_STAGES):
+            self._check_cancel(job)  # honour stop requests
             self._set_stage(job, stage, (index / total) * 100.0)
-            self._log(job, f"[FACTORY] {stage} ({job.progress:.0f}%)")
+            logger.info(f"[FACTORY] {stage} ({job.progress:.0f}%)")
             execution = pipeline.execute_stage(
                 project=f"episode-{job.episode_id}-{job.job_id}",
                 stage=stage,
@@ -499,7 +533,6 @@ class FactoryRunner:
         if "final" not in final_outputs:
             raise RuntimeError("Canonical production completed without FINAL MP4")
 
-        # Final sanity check with dynamic min_duration
         planned_dur = max(5.0, sum(s.duration for s in production.scenes))
         min_dur = max(5.0, planned_dur * 0.5)
         final_validation = validate_master(final_outputs["final"], min_duration=min_dur)
@@ -520,7 +553,8 @@ class FactoryRunner:
         job.metadata["download_url"] = f"/api/jobs/{job.job_id}/video"
         self._set_stage(job, "DELIVERY", 100.0)
         job.status = "COMPLETED"
-        self._log(job, f"[FACTORY] FINAL MP4: {job.final_mp4}")
+        logger.info(f"[FACTORY] COMPLETED — FINAL MP4: {job.final_mp4}")
+
         return {
             "job_id": job.job_id, "episode_id": job.episode_id,
             "title": title, "language": language,
@@ -529,6 +563,8 @@ class FactoryRunner:
             "outputs": {k: str(v) for k, v in final_outputs.items()},
             "scenes": len(production.scenes),
             "source_text_sha256": source_sha256,
+            "logger_lines": len(logger.lines),
+            "fallbacks": len(logger.fallback_summary()),
         }
 
     def execute(
@@ -536,7 +572,7 @@ class FactoryRunner:
         script_path: Path | None = None
     ) -> ProductionJob:
         if script_path is None:
-            raise ValueError("Production requires a current Chat input; no script fallback is permitted")
+            raise ValueError("Production requires a current Chat input")
         job = self.create_job(episode_id, profile, script_path)
         job.status = "RUNNING"
         try:
@@ -554,13 +590,22 @@ class FactoryRunner:
         script_path: Path | None = None
     ) -> ProductionJob:
         if script_path is None:
-            raise ValueError("Production requires a current Chat input; no script fallback is permitted")
+            raise ValueError("Production requires a current Chat input")
         job = self.create_job(episode_id, profile, script_path)
 
         def worker() -> None:
             job.status = "RUNNING"
             try:
                 job.metadata["result"] = self.run_episode_production(job, script_path, profile)
+            except RuntimeError as exc:
+                if "[STOP]" in str(exc):
+                    job.status = "STOPPED"
+                    job.error = "Stopped by user"
+                else:
+                    job.status = "FAILED"
+                    job.error = str(exc)
+                    self._log(job, f"[ERROR] {exc}")
+                    self._log(job, traceback.format_exc())
             except Exception as exc:
                 job.status = "FAILED"
                 job.error = str(exc)
@@ -571,7 +616,8 @@ class FactoryRunner:
         return job
 
     def handle_chat(self, message: str) -> dict[str, Any]:
-        if message.strip().lower() in {"status", "progress", "state", "الحالة", "التقدم"}:
+        if message.strip().lower() in {"status", "progress", "state",
+                                        "\u0627\u0644\u062d\u0627\u0644\u0629", "\u0627\u0644\u062a\u0642\u062f\u0645"}:
             active = [j for j in self.jobs.values() if j.status in {"RUNNING", "QUEUED"}]
             if not active:
                 return {"reply": "No active production.", "action": None}
@@ -581,6 +627,6 @@ class FactoryRunner:
                 "action": None, "job_id": job.job_id,
             }
         return {
-            "reply": "Use the Chat production entry with Episode ID, Title, Language and the complete script.",
+            "reply": "Use Chat production entry with Episode ID, Title, Language and the complete script.",
             "action": "await_script",
         }

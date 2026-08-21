@@ -1,73 +1,132 @@
-# AURELIA Maker — Free Local Video Engine (MVP)
+# AURELIA Maker
 
-This repository is an end-to-end, local-first MVP that converts an AURELIA script into cinematic documentary-style videos for YouTube (16:9) and TikTok (9:16). It is intentionally small, self-contained, and uses only free/open-source tools.
+**Free, local, open-source cinematic video factory.**
 
-Quick goals achieved by this MVP:
-- Chat-driven CLI + simple agent hooks (local LLM optional)
-- Script → Scene planning (automatic)
-- Local TTS (pyttsx3) → narration.wav
-- Procedural cinematic visuals per scene (Pillow-generated starfields, gold accents, typography)
-- Automatic editing and scene timing synced to narration
-- Subtitles (SRT approximate timings)
-- Background ambient music (procedural) + ducking
-- Transitions and final concat via ffmpeg
-- Outputs written to output/ as MP4 files for YouTube and TikTok
+`Chat Prompt → AURELIA → Script Intelligence → Cinematic Direction → Scene Visuals → Arabic/English Narration → Music → Subtitles → Color Grade → Final MP4`
 
-## Installation
+---
 
-### Prerequisites
-- Python 3.10+
-- FFmpeg (system binary)
-- libespeak1 (for text-to-speech)
-
-### Quick Setup
+## Quick Start
 
 ```bash
 # Install system dependencies (Ubuntu/Debian)
-sudo apt-get update
-sudo apt-get install -y ffmpeg libespeak1 espeak
+sudo apt-get update -y
+sudo apt-get install -y ffmpeg espeak-ng fonts-dejavu fontconfig
 
 # Install Python dependencies
 pip install -r requirements.txt
+
+# Launch web interface
+python -m aurelia.generate serve
+# Open: http://127.0.0.1:8765
 ```
 
-## Usage
+---
 
-### Generate Episode from Script
+## Chat Usage (Arabic + English)
+
+### Arabic Command
+
+```
+أنشئ فيلمًا وثائقيًا سينمائيًا بالعربية عن الذكاء الاصطناعي
+العنوان: عقول خفية
+اللغة: ar
+
+في قلب الكون الرقمي...
+```
+
+### English Command
+
+```
+Create Episode 0001
+Title: Hidden Minds
+Language: en
+
+In the heart of the digital cosmos...
+```
+
+---
+
+## CLI Usage
 
 ```bash
-./run-demo.sh
+# Web interface
+python -m aurelia.generate serve
+
+# Interactive chat
+python -m aurelia.generate chat
+
+# Produce from script file
+python -m aurelia.generate produce --script scripts/episode-0001-arabic-test.txt
+
+# Quick demo
+bash run-demo.sh ar    # Arabic
+bash run-demo.sh en    # English
 ```
 
-Or manually:
+---
+
+## Architecture
+
+```
+Chat / CLI
+  → chat_entry.py    (Arabic + English parsing)
+  → factory_runner.py (31-stage production pipeline)
+  → episode_engine.py (scene plan → visuals → audio → edit)
+  → FINAL MP4
+```
+
+### Production Stages (31)
+
+`SCRIPT → DEVELOPMENT → STORY → WORLD → CHARACTER → SERIES_BIBLE → RESEARCH → PRE_PRODUCTION → SEQUENCE → SCENE → SHOT → STORYBOARD → ANIMATIC → VISUAL → ASSET → CAMERA → DEPTH → MOTION → LIGHT → ATMOSPHERE → VFX → NARRATION → DIALOGUE → SOUND → MUSIC → AUDIO → EDIT → COLOR → SUBTITLE → MASTER → QC → DELIVERY`
+
+---
+
+## Stack (100% Free / Open Source)
+
+| Component | Tool | Notes |
+|-----------|------|-------|
+| Visual generation | Stable Diffusion v1.5 | Optional; falls back to Pillow |
+| Narration (EN) | espeak-ng en-us+f3 | Offline, no API |
+| Narration (AR) | espeak-ng ar | Offline, supports Arabic |
+| Motion / Assembly | FFmpeg | libx264 |
+| Music | pydub pentatonic synthesis | Procedural |
+| Subtitles | FFmpeg ASS burn-in | Arabic RTL supported |
+| Color grade | FFmpeg eq filter | |
+| Web server | FastAPI + uvicorn | |
+
+### Optional: Higher-Quality Visuals
 
 ```bash
-export PYTHONPATH="$(pwd):$PYTHONPATH"
-python3 aurelia/generate.py generate --script path/to/episode-script.txt --episode <EPISODE_ID> --profile both
+pip install -r requirements-ai.txt  # torch + diffusers
 ```
 
-`<EPISODE_ID>` and the corresponding script are explicit production inputs. There is no default episode.
+Stable Diffusion runs automatically if installed.
 
-### Output Files
+---
 
-Generated files are saved to `output/episode-{EPISODE_ID}/`:
-- `episode-{EPISODE_ID}-youtube.mp4` — 1920x1080 with subtitles
-- `episode-{EPISODE_ID}-tiktok.mp4` — 1920x1080 with subtitles
-- `narration.wav` — Full narration audio
-- `episode-{EPISODE_ID}.srt` — Subtitle file
-- `visuals/` — Generated scene PNG backgrounds
-- Individual scene MP4 files with zoom/pan effects
+## Outputs
 
-### Custom Script
-
-Create your own episode script file and pass the matching episode id explicitly:
-
-```bash
-python3 aurelia/generate.py generate --script path/to/episode-script.txt --episode <EPISODE_ID> --profile both
+```
+output/
+  episode-XXXX/
+    job-<uuid>/
+      delivery/
+        episode-XXXX-youtube.mp4   (1920×1080)
+        episode-XXXX-tiktok.mp4    (1080×1920)
+        episode-XXXX-FINAL.mp4
+      production_manifest.json
+      episode-XXXX.srt
+      visual_manifest.json
+      visuals/ shots/ audio/ edit/ master/
 ```
 
-### Chat Mode (Local Script Composition)
+---
 
-```bash
-python3 aurelia/generate.py chat
-```
+## System Requirements
+
+- Python 3.10+
+- FFmpeg (system binary)
+- espeak-ng (for TTS)
+- 1 GB disk space per episode
+- GPU optional (Stable Diffusion is faster with GPU)

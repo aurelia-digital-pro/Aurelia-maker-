@@ -1,0 +1,317 @@
+name: AURELIA Maker — Real End-to-End Production Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      episode_id:
+        description: "4-digit episode ID (e.g. 0001)"
+        required: false
+        default: "0001"
+        type: string
+      script_path:
+        description: "Path to script file (default: scripts/episode-0001-arabic-test.txt)"
+        required: false
+        default: "scripts/episode-0001-arabic-test.txt"
+        type: string
+      language:
+        description: "Language (ar or en)"
+        required: false
+        default: "ar"
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - "aurelia/**.py"
+      - "requirements.txt"
+
+permissions:
+  contents: read
+
+jobs:
+  production-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg espeak-ng fonts-dejavu fontconfig
+          ffmpeg -version | head -1
+          espeak-ng --version
+          fc-match -f '%{file}\n' 'sans:lang=ar' | head -1
+
+      - name: Install Python requirements
+        run: |
+          pip install --quiet -r requirements.txt
+
+      - name: Verify imports
+        run: |
+          python -c "
+          from aurelia.planner import plan_scenes
+          from aurelia.tts import synthesize_script
+          from aurelia.ai_visual import generate_scene_image
+          from aurelia.media import generate_ambient_music, validate_master
+          from aurelia.factory_runner import FactoryRunner
+          from aurelia.chat_entry import handle_chat_production
+          print('All imports OK')
+          "
+
+      - name: Run planner unit test
+        run: |
+          python - <<'PY'
+          from aurelia.planner import plan_scenes
+          # Arabic
+          arabic_script = '''
+          في قلب الكون الرقمي.
+
+          الذكاء الاصطناعي ليس مجرد برنامج.
+
+          منذ أولى المحاولات في منتصف القرن العشرين.
+
+          الرحلة لم تكن سهلة أبدًا.
+
+          لكن العقول المثابرة لا تستسلم.
+
+          اليوم، يقف الذكاء على عتبة جديدة.
+          '''
+          scenes = plan_scenes(arabic_script)
+          assert len(scenes) >= 3, f'Expected >= 3 scenes, got {len(scenes)}'
+          for s in scenes:
+              assert s['title'], 'Scene has no title'
+              assert s['text'], 'Scene has no text'
+          print(f'Planner OK: {len(scenes)} scenes')
+
+          # English
+          english_script = '''
+          In the heart of the digital cosmos.
+
+          Artificial intelligence is not merely a program.
+
+          From the earliest experiments in the mid-twentieth century.
+
+          The journey was never easy.
+
+          But resilient minds do not surrender.
+
+          Today stands at a new threshold.
+          '''
+          scenes_en = plan_scenes(english_script)
+          assert len(scenes_en) >= 3
+          print(f'Planner EN OK: {len(scenes_en)} scenes')
+          PY
+
+      - name: Run TTS test (espeak-ng)
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from aurelia.tts import synthesize_script
+          import tempfile
+
+          with tempfile.TemporaryDirectory() as tmp:
+              # English
+              out_en = Path(tmp) / 'narration_en.wav'
+              synthesize_script('Hello from AURELIA Maker production test.', out_en)
+              assert out_en.is_file() and out_en.stat().st_size > 500, 'English TTS failed'
+              print(f'TTS EN OK: {out_en.stat().st_size} bytes')
+
+              # Arabic
+              out_ar = Path(tmp) / 'narration_ar.wav'
+              synthesize_script('مرحبًا بك في الاختبار الحقيقي لمصنع AURELIA.', out_ar)
+              assert out_ar.is_file() and out_ar.stat().st_size > 500, 'Arabic TTS failed'
+              print(f'TTS AR OK: {out_ar.stat().st_size} bytes')
+          PY
+
+      - name: Run visual generation test (Pillow fallback)
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from aurelia.ai_visual import generate_scene_image
+          import tempfile
+
+          with tempfile.TemporaryDirectory() as tmp:
+              out = Path(tmp) / 'scene_01.png'
+              generate_scene_image(
+                  0, 'الفضاء والكون', 'في قلب الكون الرقمي', out,
+                  direction={'environment': 'space'}, width=256, height=256,
+              )
+              assert out.is_file() and out.stat().st_size > 5000, f'Visual generation failed: {out}'
+              print(f'Visual OK: {out.stat().st_size} bytes')
+
+              # Check it has real pixel variance
+              from PIL import Image, ImageStat
+              import statistics
+              with Image.open(out) as img:
+                  stat = ImageStat.Stat(img.convert('RGB'))
+                  stddev = statistics.fmean(stat.stddev)
+                  assert stddev >= 4, f'Image has no visual signal: stddev={stddev}'
+              print(f'Visual signal OK: stddev={stddev:.2f}')
+          PY
+
+      - name: Run music generation test
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from aurelia.media import generate_ambient_music, probe_duration
+          import tempfile
+
+          with tempfile.TemporaryDirectory() as tmp:
+              out = Path(tmp) / 'music.wav'
+              generate_ambient_music(35.0, out)
+              assert out.is_file() and out.stat().st_size > 1000, 'Music generation failed'
+              dur = probe_duration(out)
+              assert dur >= 30.0, f'Music too short: {dur}s'
+              print(f'Music OK: {out.stat().st_size} bytes, {dur:.1f}s')
+          PY
+
+      - name: Run FULL end-to-end production test
+        env:
+          ACCEPTANCE_EPISODE: ${{ inputs.episode_id || '0001' }}
+          ACCEPTANCE_SCRIPT: ${{ inputs.script_path || 'scripts/episode-0001-arabic-test.txt' }}
+        run: |
+          set -o pipefail
+          echo "[E2E] Episode: ${ACCEPTANCE_EPISODE}"
+          echo "[E2E] Script:  ${ACCEPTANCE_SCRIPT}"
+          timeout --foreground --signal=TERM --kill-after=60s 55m \
+            python -u - <<'PY'
+          import os
+          import json
+          import hashlib
+          import shutil
+          import subprocess
+          import time
+          from pathlib import Path
+
+          ROOT = Path('.')
+          episode_id = os.environ.get('ACCEPTANCE_EPISODE', '0001').strip().zfill(4)
+          script_path = ROOT / os.environ.get('ACCEPTANCE_SCRIPT', 'scripts/episode-0001-arabic-test.txt')
+
+          assert script_path.is_file(), f'Script not found: {script_path}'
+          source_text = script_path.read_text(encoding='utf-8').strip()
+          assert len(source_text) > 50, 'Script too short'
+
+          from aurelia.chat_entry import handle_chat_production
+          from aurelia.factory_runner import FactoryRunner
+          from aurelia.media import validate_master
+
+          runner = FactoryRunner(ROOT / 'runs' / 'e2e')
+          message = f'Create Episode {episode_id}\n{source_text}'
+
+          print(f'[E2E] Submitting to Chat...')
+          result = handle_chat_production(runner, message)
+          print(f'[E2E] Chat reply: {result["reply"]}')
+          assert result.get('action') == 'produce', f'Expected produce, got: {result}'
+          job_id = result['job_id']
+          print(f'[E2E] Job ID: {job_id}')
+
+          # Wait for completion
+          deadline = time.time() + 3000
+          while time.time() < deadline:
+              job = runner.jobs.get(job_id)
+              if job is None:
+                  raise RuntimeError('Job disappeared')
+              if job.status in {'COMPLETED', 'FAILED'}:
+                  break
+              print(f'  {job.stage} ({job.progress:.0f}%)', flush=True)
+              time.sleep(2.0)
+
+          job = runner.jobs[job_id]
+          if job.status != 'COMPLETED':
+              print('\n'.join(job.logs[-30:]))
+              raise RuntimeError(f'Production failed: {job.error}')
+
+          final = Path(job.final_mp4)
+          assert final.is_file(), f'FINAL MP4 not found: {final}'
+          assert final.stat().st_size >= 50_000, f'FINAL MP4 too small: {final.stat().st_size}'
+
+          # QC validation
+          qc = validate_master(final, min_duration=25.0)
+          print(f'[E2E] QC: {json.dumps(qc, indent=2)}')
+          assert qc['passed'], f'QC failed: {qc}'
+
+          # Extract frames for proof
+          frames_dir = ROOT / 'runs' / 'e2e' / 'proof_frames'
+          frames_dir.mkdir(parents=True, exist_ok=True)
+          duration = qc['duration']
+          frame_hashes = []
+          for i, frac in enumerate([0.2, 0.5, 0.8]):
+              ts = duration * frac
+              frame = frames_dir / f'frame_{i+1:02d}.png'
+              r = subprocess.run(
+                  ['ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
+                   '-ss', f'{ts:.3f}', '-i', str(final), '-frames:v', '1', str(frame)],
+                  capture_output=True, check=False,
+              )
+              if frame.is_file():
+                  frame_hashes.append(hashlib.sha256(frame.read_bytes()).hexdigest())
+
+          assert len(set(frame_hashes)) >= 2, 'All frames are identical — video is static'
+          print(f'[E2E] Frame diversity OK ({len(set(frame_hashes))} unique of {len(frame_hashes)})')
+
+          # Copy final to known path
+          dest = ROOT / 'runs' / 'e2e' / f'episode-{episode_id}-FINAL.mp4'
+          shutil.copy2(final, dest)
+
+          proof = {
+              'accepted': True,
+              'episode_id': episode_id,
+              'job_id': job_id,
+              'script': str(script_path),
+              'artifact': str(dest),
+              'sha256': hashlib.sha256(dest.read_bytes()).hexdigest(),
+              'duration_seconds': duration,
+              'size_bytes': dest.stat().st_size,
+              'qc_checks': qc['checks'],
+              'frame_diversity': len(set(frame_hashes)),
+          }
+          proof_path = ROOT / 'runs' / 'e2e' / 'production_proof.json'
+          proof_path.write_text(json.dumps(proof, indent=2, ensure_ascii=False), encoding='utf-8')
+          print(json.dumps(proof, indent=2))
+          print(f'\n[E2E] PASSED ✔ episode-{episode_id}-FINAL.mp4')
+          PY
+
+      - name: Hard artifact verification
+        run: |
+          EPISODE="${{ inputs.episode_id || '0001' }}"
+          PADDED=$(printf '%04d' "${EPISODE}")
+          FINAL="runs/e2e/episode-${PADDED}-FINAL.mp4"
+
+          echo "Verifying: ${FINAL}"
+          test -s "${FINAL}"
+
+          ffprobe -v error \
+            -show_entries "format=duration,size,format_name:stream=codec_type,codec_name,width,height" \
+            -of json "${FINAL}"
+
+          python - <<PY
+          import json
+          from pathlib import Path
+          proof = json.loads(Path('runs/e2e/production_proof.json').read_text())
+          assert proof['accepted'] is True
+          assert proof['duration_seconds'] >= 25
+          assert proof['size_bytes'] >= 50000
+          assert proof['frame_diversity'] >= 2
+          assert proof['qc_checks']['has_video'] is True
+          assert proof['qc_checks']['has_audio'] is True
+          print(f"VERIFIED: {proof['episode_id']}  sha256={proof['sha256'][:16]}...")
+          PY
+
+      - name: Upload proof artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aurelia-production-proof
+          path: |
+            runs/e2e/episode-*-FINAL.mp4
+            runs/e2e/production_proof.json
+            runs/e2e/proof_frames/*.png
+          retention-days: 30

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ar" dir="rtl">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -17,7 +17,6 @@
         </div>
       </div>
       <div class="header-actions">
-        <button id="btn-new-episode" class="btn primary">+ New Episode</button>
         <span id="factory-status" class="badge ok">Factory Connected</span>
       </div>
     </header>
@@ -54,14 +53,21 @@
           <form id="chat-form" class="chat-form">
             <textarea
               id="chat-input"
-              rows="7"
-              placeholder="Create an episode
-Profile: youtube / tiktok / both
+              rows="9"
+              placeholder="أنشئ فيلمًا وثائقيًا سينمائيًا بالعربية عن ...
+العنوان: ...
+اللغة: ar
 
-Paste the complete episode script here..."
+[محتوى السيناريو هنا]
+---
+Create Episode 0001
+Title: ...
+Language: en
+
+[script here]"
               autocomplete="off"
             ></textarea>
-            <button type="submit" class="btn primary">Send</button>
+            <button type="submit" class="btn primary">Send ▶</button>
           </form>
         </div>
       </section>
@@ -72,28 +78,6 @@ Paste the complete episode script here..."
       </aside>
     </main>
   </div>
-
-  <dialog id="episode-dialog">
-    <form method="dialog" id="episode-form">
-      <h3>Create Episode</h3>
-      <label>
-        Episode ID
-        <input id="episode-id-input" type="text" pattern="\d{1,4}" placeholder="Episode number" required />
-      </label>
-      <label>
-        Profile
-        <select id="profile-input">
-          <option value="both">YouTube + TikTok</option>
-          <option value="youtube">YouTube</option>
-          <option value="tiktok">TikTok</option>
-        </select>
-      </label>
-      <div class="dialog-actions">
-        <button type="button" id="dialog-cancel" class="btn">Cancel</button>
-        <button type="submit" class="btn primary">Start Production</button>
-      </div>
-    </form>
-  </dialog>
 
   <script src="app.js"></script>
 </body>

@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Tuple
@@ -88,6 +87,8 @@ def generate_scene_image_with_provenance(
             "sha256": sha,
             "path": str(output_path),
             "scene_index": scene_index,
+            "fallback": True,
+            "fallback_reason": "test-stub",
         }
         _write_provenance(output_path, prov)
         return output_path, prov
@@ -115,12 +116,26 @@ def generate_scene_image_with_provenance(
             height=int(image_cfg.get("height", 512)),
         )
     except Exception as exc:
-        raise VisualGenerationError(f"AI visual backend failed: {exc}") from exc
+        # If AI backend failed, try pillow fallback explicitly via ai_visual
+        try:
+            # ai_visual.generate_scene_image already attempts SD then pillow; here we retry a pillow-only path
+            from .ai_visual import _generate_with_pillow  # type: ignore
+            ok = _generate_with_pillow(scene_index, title, text, output_path, direction, int(image_cfg.get("width", 512)), int(image_cfg.get("height", 512)), visual_note="", run_id="")
+            if not ok:
+                raise VisualGenerationError(f"Both SD and Pillow backends failed: {exc}")
+            generated = output_path
+            fallback_used = True
+            fallback_reason = str(exc)
+        except Exception as exc2:
+            raise VisualGenerationError(f"AI visual backend failed: {exc}; pillow fallback also failed: {exc2}") from exc2
+    else:
+        fallback_used = False
+        fallback_reason = ""
 
     if not Path(generated).is_file():
         raise VisualGenerationError(f"AI visual backend produced no file: {generated}")
 
-    # Read any prov.json created by ai_visual
+    # Read any prov.json created by ai_visual (some implementations may write it)
     prov_path = Path(generated).with_suffix(Path(generated).suffix + ".prov.json")
     prov: Dict[str, Any] = {}
     if prov_path.is_file():
@@ -131,13 +146,13 @@ def generate_scene_image_with_provenance(
 
     # Ensure canonical provenance fields exist
     sha = _sha256(Path(generated))
-    prov.setdefault("backend", model_info.get("source") or "diffusers")
+    prov.setdefault("backend", (model_info.get("source") or "stable-diffusion") if not fallback_used else "pillow")
     prov.setdefault("model_id", model_info.get("id") or None)
     prov.setdefault("model_source", model_info.get("source") or None)
     prov.setdefault("model_revision", model_info.get("recommended_revision") or None)
     prov.setdefault("prompt", prompt)
     prov.setdefault("negative_prompt", negative)
-    prov.setdefault("seed", None)
+    prov.setdefault("seed", prov.get("seed", None))
     prov.setdefault("width", int(image_cfg.get("width", 512)))
     prov.setdefault("height", int(image_cfg.get("height", 512)))
     prov.setdefault("steps", int(image_cfg.get("steps", 20)))
@@ -147,9 +162,9 @@ def generate_scene_image_with_provenance(
     prov.setdefault("path", str(Path(generated).resolve()))
     prov.setdefault("scene_index", scene_index)
 
-    # If no explicit fallback recorded, assert fallback=False
-    prov.setdefault("fallback", False)
-    prov.setdefault("fallback_reason", "")
+    # Record fallback if we used a fallback path
+    prov.setdefault("fallback", bool(prov.get("fallback", False) or fallback_used))
+    prov.setdefault("fallback_reason", prov.get("fallback_reason", fallback_reason or ""))
 
     # Write merged provenance back next to asset
     _write_provenance(Path(generated), prov)

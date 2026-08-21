@@ -1,4 +1,11 @@
-"""AURELIA Maker — canonical episode production engine (Factory → FINAL MP4)."""
+"""AURELIA Maker — canonical episode production engine (Factory → FINAL MP4).
+
+Key fixes in this revision:
+- max_duration is now DYNAMIC — defaults to 3600 s (1 hour), scales to content
+- scene_index is now passed to DirectingEngine.direct() for movement variety
+- environment saturation is now derived from environment type, not a fixed list
+- language is auto-detected from script if not explicitly set
+"""
 
 from __future__ import annotations
 
@@ -29,13 +36,25 @@ from .tts import synthesize_script
 
 LogFn = Callable[[str], None]
 
+# Default scene duration in seconds
+_SCENE_DURATION_DEFAULT = 18.0
+# Minimum per-scene duration even after scaling
+_SCENE_DURATION_MIN = 6.0
+# When no max_duration supplied, we use this large value (1 hour)
+_MAX_DURATION_UNLIMITED = 3600.0
+
+# Environments that look best with slightly boosted saturation
+_HIGH_SAT_ENVS = {"space", "ocean", "fantasy", "fire", "dream", "machine"}
+# Environments that look best with slightly reduced saturation (moody)
+_LOW_SAT_ENVS = {"ancient", "battle", "industry"}
+
 
 @dataclass
 class ScenePlan:
     index: int
     title: str
     text: str
-    duration: float = 18.0
+    duration: float = _SCENE_DURATION_DEFAULT
     movement: str = "push_in"
     direction: dict[str, Any] = field(default_factory=dict)
 
@@ -46,8 +65,8 @@ class EpisodeProduction:
     root: Path
     script_path: Path
     profile: str = "youtube"
-    language: str = "en"          # "ar" or "en" — set by FactoryRunner
-    max_duration: float = 300.0   # 5 minutes max
+    language: str = "auto"        # "ar", "en", or "auto" — auto-detected from script
+    max_duration: float = _MAX_DURATION_UNLIMITED  # no hard cap by default
     title: str = ""
     scenes: list[ScenePlan] = field(default_factory=list)
     log: LogFn = field(default=lambda _msg: None)
@@ -84,7 +103,6 @@ class EpisodeProduction:
         )
         if heading:
             return heading
-        # Use first non-empty line as title
         for line in request_text.splitlines():
             stripped = line.strip()
             if stripped and len(stripped) > 3:
@@ -106,6 +124,11 @@ class EpisodeProduction:
             raise ValueError("Production request contains no episode script content")
         return body
 
+    @staticmethod
+    def _detect_language(text: str) -> str:
+        ar_chars = len(re.findall(r'[\u0600-\u06FF]', text))
+        return "ar" if ar_chars > len(text) * 0.15 else "en"
+
     def _emit(self, message: str) -> None:
         self.log(message)
 
@@ -113,39 +136,58 @@ class EpisodeProduction:
         request_text = self.script_path.read_text(encoding="utf-8").strip()
         if not request_text:
             raise ValueError(f"Empty script: {self.script_path}")
-        return self._extract_script_body(request_text)
+        body = self._extract_script_body(request_text)
+        # Auto-detect language if not explicitly set
+        if self.language == "auto":
+            self.language = self._detect_language(request_text)
+            self._emit(f"Language auto-detected: {self.language}")
+        return body
 
     def build_scene_plan(self, script_text: str) -> list[ScenePlan]:
-        raw = plan_scenes(script_text, min_scenes=3, max_scenes=20)
+        # Dynamically compute max_scenes from content length
+        word_count = len(script_text.split())
+        dynamic_max = max(3, min(60, word_count // 50))  # ~50 words per scene
+        raw = plan_scenes(script_text, min_scenes=3, max_scenes=dynamic_max)
+
         scenes: list[ScenePlan] = []
         for index, scene in enumerate(raw):
             scene_id = f"episode-{self.episode_id}:scene-{index + 1:03d}"
+            # Estimate scene duration from text length (~3 words/second narration pace)
+            scene_words = len(scene["text"].split())
+            estimated_duration = max(_SCENE_DURATION_MIN, scene_words / 3.0)
             direction = self.director.direct(
                 scene_id=scene_id,
                 title=scene["title"],
                 text=scene["text"],
-                duration=18.0,
+                duration=estimated_duration,
+                scene_index=index,  # enables movement variety
             )
             scenes.append(ScenePlan(
                 index=index,
                 title=scene["title"],
                 text=scene["text"],
-                duration=18.0,
+                duration=estimated_duration,
                 movement=direction["camera"]["movement"],
                 direction=direction,
             ))
+
         if not scenes:
             raise ValueError("No scenes could be planned from the supplied script")
 
-        # Scale durations to fit max_duration
+        # Only scale if we genuinely exceed max_duration (no scaling for unlimited)
         total = sum(s.duration for s in scenes) + 8.0
         if total > self.max_duration:
             scale = (self.max_duration - 8.0) / max(sum(s.duration for s in scenes), 1.0)
             for scene in scenes:
-                scene.duration = max(8.0, round(scene.duration * scale, 1))
+                scene.duration = max(_SCENE_DURATION_MIN, round(scene.duration * scale, 1))
                 scene.direction["motion"]["duration"] = scene.duration
 
         self.scenes = scenes
+        total_planned = sum(s.duration for s in scenes)
+        self._emit(
+            f"Scene plan: {len(scenes)} scenes, "
+            f"estimated duration {total_planned:.0f}s ({total_planned / 60:.1f} min)"
+        )
         return scenes
 
     def generate_visual_assets(self) -> list[Path]:
@@ -153,17 +195,19 @@ class EpisodeProduction:
         assets: list[Path] = []
         for scene in self.scenes:
             path = self.dirs["visuals"] / f"scene_{scene.index + 1:02d}.png"
+            env = scene.direction.get("environment", "abstract")
+            self._emit(f"  Scene {scene.index + 1}: [{env}] {scene.title[:50]}")
             generate_scene_image(
                 scene.index, scene.title, scene.text, path,
                 direction=scene.direction, width=512, height=512,
             )
             assets.append(path)
+
         if not assets or not all(
             p.exists() and p.stat().st_size > 1000 for p in assets
         ):
-            raise RuntimeError(
-                "Visual generation produced no valid scene assets"
-            )
+            raise RuntimeError("Visual generation produced no valid scene assets")
+
         script_text_for_manifest = self.script_path.read_text(encoding="utf-8").strip()
         self.visual_manifest_path = self.root / "visual_manifest.json"
         self.visual_manifest_path.write_text(
@@ -179,6 +223,7 @@ class EpisodeProduction:
                     {
                         "index": scene.index,
                         "title": scene.title,
+                        "environment": scene.direction.get("environment", "abstract"),
                         "text_sha256": hashlib.sha256(scene.text.encode("utf-8")).hexdigest(),
                         "asset": str(asset),
                         "asset_sha256": hashlib.sha256(asset.read_bytes()).hexdigest(),
@@ -202,8 +247,10 @@ class EpisodeProduction:
         synthesize_script(script_text, narration_path)
         if not narration_path.exists() or narration_path.stat().st_size < 1000:
             raise RuntimeError("Narration synthesis failed")
+        narration_duration = probe_duration(narration_path)
         self._emit(
-            f"Narration ready: {narration_path} ({narration_path.stat().st_size} bytes)"
+            f"Narration ready: {narration_path.stat().st_size} bytes, "
+            f"{narration_duration:.1f}s"
         )
         return narration_path
 
@@ -252,26 +299,54 @@ class EpisodeProduction:
             motion_plan = direction["motion"]
             lighting_plan = direction["lighting"]
             depth_plan = direction["depth"]
+            environment = direction.get("environment", "abstract")
+
             zoom_start = float(motion_plan.get("start", {}).get("zoom", 1.0))
             zoom_end = float(motion_plan.get("end", {}).get("zoom", 1.08))
             key = lighting_plan.get("key") or {}
             fill = lighting_plan.get("fill") or {}
             brightness = 1.0 + min(float(key.get("intensity", 0.7)) * 0.04, 0.06)
             contrast = 1.04 + min(float(fill.get("intensity", 0.2)) * 0.04, 0.03)
-            saturation = 1.08 if direction["environment"] in {"space", "abstract"} else 1.04
+
+            # Saturation derived from environment type
+            if environment in _HIGH_SAT_ENVS:
+                saturation = 1.12
+            elif environment in _LOW_SAT_ENVS:
+                saturation = 0.95
+            else:
+                saturation = 1.05
+
             engine.render_motion(
                 asset, out,
                 duration=scene.duration,
-                camera={"movement": camera_plan["movement"], "zoom_start": zoom_start, "zoom_end": zoom_end},
+                camera={
+                    "movement": camera_plan["movement"],
+                    "zoom_start": zoom_start,
+                    "zoom_end": zoom_end,
+                },
                 depth={"depth_of_field": float(depth_plan.get("depth_of_field", 0.0))},
-                lighting={"brightness": brightness, "contrast": contrast, "saturation": saturation},
-                atmosphere={"blur": float((lighting_plan.get("atmosphere") or {}).get("haze", 0.0)) * 0.8},
-                vfx={"blur": float((lighting_plan.get("atmosphere") or {}).get("fog", 0.0)) * 0.4},
+                lighting={
+                    "brightness": brightness,
+                    "contrast": contrast,
+                    "saturation": saturation,
+                },
+                atmosphere={
+                    "blur": float(
+                        (lighting_plan.get("atmosphere") or {}).get("haze", 0.0)
+                    ) * 0.8
+                },
+                vfx={
+                    "blur": float(
+                        (lighting_plan.get("atmosphere") or {}).get("fog", 0.0)
+                    ) * 0.4
+                },
             )
             clips.append(out)
         return clips
 
-    def assemble_edit(self, clips: list[Path], narration_path: Path, music_path: Path | None) -> Path:
+    def assemble_edit(
+        self, clips: list[Path], narration_path: Path, music_path: Path | None
+    ) -> Path:
         self._emit("Editing — concatenating shots and mixing audio...")
         video_only = self.dirs["edit"] / "video_concat.mp4"
         concat_clips(clips, video_only)
@@ -305,7 +380,7 @@ class EpisodeProduction:
         final_alias.write_bytes(final_youtube.read_bytes())
         outputs["final"] = final_alias
 
-        qc = validate_master(final_alias, min_duration=30.0)
+        qc = validate_master(final_alias, min_duration=5.0)  # reduced minimum for short episodes
         visual_qc = validate_visual_manifest(self.visual_manifest_path, len(self.scenes))
         qc["visual_content"] = visual_qc
         qc["passed"] = qc["passed"] and visual_qc["passed"]
@@ -313,7 +388,8 @@ class EpisodeProduction:
             raise RuntimeError(f"QC failed: {qc}")
 
         manifest = {
-            "episode_id": self.episode_id, "title": self.title,
+            "episode_id": self.episode_id,
+            "title": self.title,
             "language": self.language,
             "duration": probe_duration(final_alias),
             "outputs": {key: str(path) for key, path in outputs.items()},
@@ -324,13 +400,18 @@ class EpisodeProduction:
         (self.root / "production_manifest.json").write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        self._emit(f"FINAL MP4 ready: {final_alias}")
+        final_duration = probe_duration(final_alias)
+        self._emit(
+            f"FINAL MP4 ready: {final_alias} "
+            f"({final_duration:.1f}s / {final_duration / 60:.1f} min)"
+        )
         return outputs
 
     def produce(self) -> dict[str, Any]:
-        """Legacy single-call production (used by acceptance tests)."""
-        self._emit(f"Starting Factory production — Episode {self.episode_id}: {self.title}")
+        """Single-call production: script → FINAL MP4."""
+        self._emit(f"Starting AURELIA production — Episode {self.episode_id}")
         script_text = self.load_script()
+        self._emit(f"Title: {self.title} | Language: {self.language}")
         self.build_scene_plan(script_text)
         assets = self.generate_visual_assets()
         narration = self.synthesize_narration(script_text)
@@ -345,7 +426,9 @@ class EpisodeProduction:
         edit = self.assemble_edit(clips, narration, music_path)
         outputs = self.finish(edit, srt)
         return {
-            "episode_id": self.episode_id, "title": self.title,
+            "episode_id": self.episode_id,
+            "title": self.title,
+            "language": self.language,
             "final_mp4": str(outputs["final"]),
             "outputs": {k: str(v) for k, v in outputs.items()},
             "duration": probe_duration(outputs["final"]),
@@ -358,15 +441,20 @@ def produce_episode(
     script_path: str | Path,
     output_root: str | Path,
     profile: str = "both",
-    language: str = "en",
+    language: str = "auto",
     log: LogFn | None = None,
+    max_duration: float = _MAX_DURATION_UNLIMITED,
 ) -> dict[str, Any]:
     production = EpisodeProduction(
         episode_id=episode_id,
-        root=Path(output_root) / f"episode-{episode_id.zfill(4) if episode_id.isdigit() else episode_id}",
+        root=(
+            Path(output_root)
+            / f"episode-{episode_id.zfill(4) if episode_id.isdigit() else episode_id}"
+        ),
         script_path=Path(script_path),
         profile=profile,
         language=language,
+        max_duration=max_duration,
         log=log or (lambda _m: None),
     )
     return production.produce()

@@ -3,11 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AURELIA Maker</title>
+  <title>AURELIA Maker — Production Factory</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div class="app">
+
+    <!-- HEADER -->
     <header class="header">
       <div class="brand">
         <span class="logo">◈</span>
@@ -16,45 +18,101 @@
           <p>Chat → Factory → Cinematic Production → FINAL MP4</p>
         </div>
       </div>
-      <div class="header-actions">
-        <span id="factory-status" class="badge ok">Factory Connected</span>
+      <div class="header-status">
+        <span id="status-sd" class="badge" title="Visual Backend (Stable Diffusion)">SD …</span>
+        <span id="status-tts" class="badge" title="TTS Backends">TTS …</span>
+        <span id="status-factory" class="badge" title="Factory Connection">Factory …</span>
       </div>
     </header>
 
     <main class="main">
-      <aside class="sidebar">
-        <section>
-          <h2>Projects</h2>
-          <ul id="episode-list" class="episode-list"></ul>
+
+      <!-- LEFT SIDEBAR: Projects + Jobs -->
+      <aside class="sidebar" id="sidebar">
+        <section class="sidebar-section">
+          <div class="sidebar-header">
+            <h2>Projects</h2>
+            <button class="btn-sm" id="btn-refresh-episodes" title="Refresh">&#8635;</button>
+          </div>
+          <ul id="episode-list" class="item-list"></ul>
         </section>
-        <section>
-          <h2>Production Jobs</h2>
-          <ul id="job-list" class="job-list"></ul>
+
+        <section class="sidebar-section">
+          <div class="sidebar-header">
+            <h2>Production Jobs</h2>
+            <button class="btn-sm" id="btn-refresh-jobs" title="Refresh">&#8635;</button>
+          </div>
+          <ul id="job-list" class="item-list"></ul>
+        </section>
+
+        <section class="sidebar-section">
+          <div class="sidebar-header">
+            <h2>Production Settings</h2>
+          </div>
+          <div class="settings-form">
+            <label>Language
+              <select id="sel-language">
+                <option value="auto">Auto-detect</option>
+                <option value="ar">عربي (Arabic)</option>
+                <option value="en">English</option>
+              </select>
+            </label>
+            <label>Profile
+              <select id="sel-profile">
+                <option value="both">YouTube + TikTok</option>
+                <option value="youtube">YouTube only</option>
+                <option value="tiktok">TikTok only</option>
+              </select>
+            </label>
+            <label>Episode ID
+              <input type="text" id="inp-episode-id" placeholder="0001" maxlength="20" />
+            </label>
+          </div>
         </section>
       </aside>
 
+      <!-- MAIN WORKSPACE -->
       <section class="workspace">
-        <div class="progress-panel" id="progress-panel" hidden>
-          <div class="progress-header">
-            <span id="progress-stage">—</span>
-            <span id="progress-pct">0%</span>
+
+        <!-- ACTIVE JOB TRACKER -->
+        <div class="tracker" id="tracker" hidden>
+          <div class="tracker-top">
+            <span class="tracker-label">Job <span id="tracker-job-id"></span></span>
+            <span class="tracker-stage" id="tracker-stage">idle</span>
+            <span class="tracker-scene" id="tracker-scene"></span>
+            <span class="tracker-pct" id="tracker-pct">0%</span>
+            <div class="tracker-bar"><div id="tracker-fill"></div></div>
           </div>
-          <div class="progress-bar"><div id="progress-fill"></div></div>
+          <div class="tracker-actions">
+            <button class="btn danger-sm" id="btn-stop-job" title="Stop job">Stop</button>
+            <button class="btn-sm" id="btn-retry-job" title="Retry stage">Retry</button>
+          </div>
         </div>
 
+        <!-- BACKEND STATUS PANEL -->
+        <div class="backend-panel" id="backend-panel" hidden>
+          <h3>Backend Status</h3>
+          <pre id="backend-detail"></pre>
+        </div>
+
+        <!-- FINAL VIDEO PANEL -->
         <div class="video-panel" id="video-panel" hidden>
           <h2>Final MP4</h2>
           <video id="final-video" controls></video>
-          <a id="download-link" class="btn" download>Download FINAL MP4</a>
+          <div class="video-actions">
+            <a id="download-link" class="btn primary" download>Download FINAL MP4</a>
+            <button class="btn-sm" id="btn-new-episode">New Episode</button>
+          </div>
         </div>
 
+        <!-- CHAT PANEL -->
         <div class="chat-panel">
           <div id="chat-messages" class="chat-messages"></div>
           <form id="chat-form" class="chat-form">
             <textarea
               id="chat-input"
               rows="9"
-              placeholder="أنشئ فيلمًا وثائقيًا سينمائيًا بالعربية عن ...
+              placeholder="أنشئ فيلماً وثائقياً سينمائياً بالعربية عن ...
 العنوان: ...
 اللغة: ar
 
@@ -67,15 +125,43 @@ Language: en
 [script here]"
               autocomplete="off"
             ></textarea>
-            <button type="submit" class="btn primary">Send ▶</button>
+            <div class="chat-form-actions">
+              <button type="submit" class="btn primary" id="btn-send">▶ Send</button>
+              <button type="button" class="btn-sm" id="btn-check-status">Check Status</button>
+            </div>
           </form>
         </div>
       </section>
 
+      <!-- RIGHT: TERMINAL -->
       <aside class="terminal-panel">
-        <h2>Factory Terminal</h2>
+        <div class="terminal-header">
+          <h2>Factory Terminal</h2>
+          <div>
+            <button class="btn-sm" id="btn-clear-terminal">Clear</button>
+            <button class="btn-sm" id="btn-copy-terminal">Copy</button>
+          </div>
+        </div>
         <pre id="terminal-output" class="terminal"></pre>
+
+        <!-- Fallback + Error section -->
+        <div class="fallback-report" id="fallback-report" hidden>
+          <h3>Fallbacks &amp; Warnings</h3>
+          <ul id="fallback-list"></ul>
+        </div>
+
+        <div class="qc-report" id="qc-report" hidden>
+          <h3>QC Report</h3>
+          <pre id="qc-detail"></pre>
+        </div>
+
+        <!-- Output artifacts -->
+        <div class="artifacts" id="artifacts" hidden>
+          <h3>Output Artifacts</h3>
+          <ul id="artifact-list"></ul>
+        </div>
       </aside>
+
     </main>
   </div>
 

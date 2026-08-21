@@ -1,15 +1,17 @@
 """AURELIA — primary visual backend router.
 
-Priority chain:
-  1. Stable Diffusion (diffusers) — local, GPU/CPU, real neural images
-  2. ai_visual Pillow procedural  — fallback, always works
+Priority chain (first available wins):
+  1. Stable Diffusion (diffusers) — local GPU/CPU, real neural images
+  2. Cloud API (Pollinations.ai FLUX free → Together → Replicate → FAL)
+  3. Pillow procedural            — guaranteed local fallback, always works
 
 Rules:
-- Failure in SD is NEVER silent. A WARNING log is emitted and fallback recorded.
-- Pillow is NEVER declared as "primary" in provenance; it is "pillow-fallback".
-- Caller can force fallback with: AURELIA_FORCE_FALLBACK=1 env var.
-- SD model path/ID is read from AURELIA_SD_MODEL env or ai_config.json.
-- On first call, backend availability is probed and cached for the process.
+- SD failure is NEVER silent. WARNING is logged and chain continues.
+- Cloud API failure is logged per backend; all are tried before Pillow.
+- Pillow is NEVER declared as primary; it is "pillow-fallback" in provenance.
+- AURELIA_FORCE_FALLBACK=1 skips SD and cloud, forces Pillow immediately.
+- AURELIA_VISUAL_BACKEND=pollinations|together|replicate|fal|pillow overrides cloud priority.
+- SD model configured via AURELIA_SD_MODEL env or ai_config.json.
 """
 from __future__ import annotations
 
@@ -21,9 +23,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# ── SD availability probe (cached) ──────────────────────────────────────────
+# ── SD availability probe (cached per process) ───────────────────────────────
 
-_SD_AVAILABLE: bool | None = None  # None = not yet probed
+_SD_AVAILABLE: bool | None = None
 _SD_MODEL_ID: str = ""
 _SD_PROBE_ERROR: str = ""
 
@@ -44,7 +46,7 @@ def _cfg() -> dict[str, Any]:
 def probe_sd_backend(force: bool = False) -> dict[str, Any]:
     """Probe whether a local Stable Diffusion pipeline can be loaded.
 
-    Returns dict: {available, model_id, device, error}
+    Returns: {available, model_id, device, error}
     Caches result after first call unless force=True.
     """
     global _SD_AVAILABLE, _SD_MODEL_ID, _SD_PROBE_ERROR
@@ -52,8 +54,8 @@ def probe_sd_backend(force: bool = False) -> dict[str, Any]:
     if _SD_AVAILABLE is not None and not force:
         return {
             "available": _SD_AVAILABLE,
-            "model_id": _SD_MODEL_ID,
-            "error": _SD_PROBE_ERROR,
+            "model_id":  _SD_MODEL_ID,
+            "error":     _SD_PROBE_ERROR,
         }
 
     if os.environ.get("AURELIA_FORCE_FALLBACK") == "1":
@@ -67,29 +69,26 @@ def probe_sd_backend(force: bool = False) -> dict[str, Any]:
         or cfg.get("model", {}).get("id", "")
         or "stabilityai/stable-diffusion-2-1"
     )
-
     try:
-        import torch  # type: ignore  # noqa: F401
+        import torch      # type: ignore  # noqa: F401
         import diffusers  # type: ignore  # noqa: F401
-        # Don't actually load the model here — just verify packages exist.
-        # Actual model load is deferred to first generate call.
         _SD_AVAILABLE = True
-        _SD_MODEL_ID = model_id
+        _SD_MODEL_ID  = model_id
         _SD_PROBE_ERROR = ""
         return {"available": True, "model_id": model_id, "error": ""}
     except ImportError as e:
         _SD_AVAILABLE = False
-        _SD_MODEL_ID = ""
+        _SD_MODEL_ID  = ""
         _SD_PROBE_ERROR = f"diffusers/torch not installed: {e}"
         return {"available": False, "model_id": "", "error": _SD_PROBE_ERROR}
     except Exception as e:
         _SD_AVAILABLE = False
-        _SD_MODEL_ID = ""
+        _SD_MODEL_ID  = ""
         _SD_PROBE_ERROR = str(e)
         return {"available": False, "model_id": "", "error": _SD_PROBE_ERROR}
 
 
-_SD_PIPELINE = None  # cached loaded pipeline
+_SD_PIPELINE = None
 
 
 def _load_sd_pipeline() -> Any:
@@ -97,22 +96,20 @@ def _load_sd_pipeline() -> Any:
     global _SD_PIPELINE
     if _SD_PIPELINE is not None:
         return _SD_PIPELINE
-
     import torch
     from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
 
     cfg = _cfg()
-    img_cfg = cfg.get("image", {})
-    model_id = _SD_MODEL_ID or os.environ.get("AURELIA_SD_MODEL") or "stabilityai/stable-diffusion-2-1"
-
+    model_id = (
+        _SD_MODEL_ID
+        or os.environ.get("AURELIA_SD_MODEL")
+        or "stabilityai/stable-diffusion-2-1"
+    )
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype  = torch.float16 if device == "cuda" else torch.float32
-
     pipe = StableDiffusionPipeline.from_pretrained(
-        model_id,
-        torch_dtype=dtype,
-        safety_checker=None,
-        requires_safety_checker=False,
+        model_id, torch_dtype=dtype,
+        safety_checker=None, requires_safety_checker=False,
     )
     pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
     if device == "cuda":
@@ -127,50 +124,32 @@ def _load_sd_pipeline() -> Any:
 
 
 def _generate_sd(
-    prompt: str,
-    negative_prompt: str,
-    seed: int,
-    width: int,
-    height: int,
-    steps: int,
-    guidance: float,
-    output: Path,
+    prompt: str, negative_prompt: str, seed: int,
+    width: int, height: int, steps: int, guidance: float, output: Path,
 ) -> bool:
-    """Run SD inference. Returns True on success, False on failure."""
+    """Run SD inference. Returns True on success."""
     try:
         import torch
         pipe = _load_sd_pipeline()
         generator = torch.Generator().manual_seed(seed)
         result = pipe(
-            prompt,
-            negative_prompt=negative_prompt or None,
-            width=width,
-            height=height,
-            num_inference_steps=steps,
-            guidance_scale=guidance,
+            prompt, negative_prompt=negative_prompt or None,
+            width=width, height=height,
+            num_inference_steps=steps, guidance_scale=guidance,
             generator=generator,
         )
-        image = result.images[0]
-        image.save(str(output))
+        result.images[0].save(str(output))
         return output.is_file() and output.stat().st_size > 1000
-    except Exception as e:
+    except Exception:
         return False
 
 
-# ── Pillow fallback ───────────────────────────────────────────────────────────
-
 def _generate_pillow(
-    scene_index: int,
-    title: str,
-    text: str,
-    output: Path,
+    scene_index: int, title: str, text: str, output: Path,
     direction: dict[str, Any] | None,
-    width: int,
-    height: int,
-    visual_note: str,
-    run_id: str,
+    width: int, height: int,
 ) -> None:
-    """Call ai_visual Pillow backend (always available)."""
+    """Pillow procedural fallback — always available."""
     from .ai_visual import generate_scene_image
     generate_scene_image(
         scene_index, title, text, output,
@@ -192,10 +171,10 @@ def generate_visual(
     run_id: str = "",
     logger: Any | None = None,
 ) -> dict[str, Any]:
-    """Generate one scene visual. Returns provenance dict.
+    """Generate one scene visual.
 
-    Tries SD first; on any failure logs WARNING and uses Pillow.
-    NEVER silently succeeds with the wrong backend.
+    Chain:  SD (local GPU) → Cloud API (Pollinations.ai FLUX free → paid) → Pillow
+    Returns provenance dict. Never raises on fallback — always produces a file.
     """
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -204,99 +183,124 @@ def generate_visual(
         if logger is not None:
             logger(msg)
 
-    cfg = _cfg()
-    img_cfg = cfg.get("image", {})
+    cfg      = _cfg()
+    img_cfg  = cfg.get("image", cfg.get("visual", {}))
     steps    = int(img_cfg.get("steps", 20))
     guidance = float(img_cfg.get("guidance_scale", 7.5))
-    neg_prompt = img_cfg.get("negative_prompt", "")
+    neg_p    = img_cfg.get("negative_prompt", "")
 
-    # Build prompt
+    # Build cinematic prompt
     try:
         from .ai_visual import build_scene_prompt
         prompt = build_scene_prompt(title, text, direction)
     except Exception:
-        prompt = f"{title}. {text}"
+        env = (direction or {}).get("environment", "abstract")
+        prompt = f"cinematic film still, {env} setting, {title}: {text}"
     if visual_note:
         prompt = f"{prompt}, {visual_note}"
 
-    # Seed: mix content + run_id for variation
     seed_str = f"{title}|{text}|{visual_note}|{run_id}"
     seed = int(hashlib.md5(seed_str.encode()).hexdigest()[:8], 16)
 
     t0 = time.monotonic()
-    backend_used = "unknown"
+    backend_used    = "unknown"
     fallback_reason = ""
 
-    # Try SD
+    # ── 1. Stable Diffusion (local) ──────────────────────────────────────
     probe = probe_sd_backend()
     if probe["available"]:
-        _log(f"[VISUAL] Scene {scene_index+1}: trying SD ({probe['model_id']})")
+        _log(f"[VISUAL] Scene {scene_index+1}: SD ({probe['model_id']})")
         try:
             ok = _generate_sd(
-                prompt=prompt,
-                negative_prompt=neg_prompt,
-                seed=seed,
-                width=width,
-                height=height,
-                steps=steps,
-                guidance=guidance,
-                output=output_path,
+                prompt=prompt, negative_prompt=neg_p, seed=seed,
+                width=width, height=height,
+                steps=steps, guidance=guidance, output=output_path,
             )
             if ok:
                 backend_used = "stable-diffusion"
                 _log(f"[VISUAL] Scene {scene_index+1}: SD OK ({time.monotonic()-t0:.1f}s)")
             else:
-                fallback_reason = "SD inference produced empty output"
+                fallback_reason = "SD produced empty output"
                 _log(f"[VISUAL][WARNING] Scene {scene_index+1}: SD failed — {fallback_reason}")
         except Exception as exc:
             fallback_reason = str(exc)
             _log(f"[VISUAL][WARNING] Scene {scene_index+1}: SD exception — {fallback_reason}")
     else:
         fallback_reason = probe["error"]
-        _log(f"[VISUAL][FALLBACK] Scene {scene_index+1}: SD unavailable — {fallback_reason}")
+        _log(f"[VISUAL] Scene {scene_index+1}: SD unavailable — {fallback_reason}")
 
-    # Fallback to Pillow
+    # ── 2. Cloud API (Pollinations.ai FLUX free → Together → Replicate → FAL) ─
     if backend_used != "stable-diffusion":
-        _log(f"[VISUAL][FALLBACK] Scene {scene_index+1}: using Pillow procedural")
-        _generate_pillow(
-            scene_index, title, text, output_path,
-            direction, width, height, visual_note, run_id,
+        from .visual_api import generate_via_api
+        _log(f"[VISUAL] Scene {scene_index+1}: trying cloud API...")
+        api_ok, api_backend = generate_via_api(
+            prompt=prompt, seed=seed, width=width, height=height,
+            output_path=output_path, logger=_log,
         )
+        if api_ok:
+            backend_used = f"cloud-api/{api_backend}"
+            _log(
+                f"[VISUAL] Scene {scene_index+1}: cloud OK via {api_backend}"
+                f" ({time.monotonic()-t0:.1f}s)"
+            )
+        else:
+            if not fallback_reason:
+                fallback_reason = "all cloud API backends unavailable or timed out"
+            _log(
+                f"[VISUAL][FALLBACK] Scene {scene_index+1}: cloud API failed — "
+                f"{fallback_reason}"
+            )
+
+    # ── 3. Pillow procedural (guaranteed fallback) ────────────────────────
+    if not backend_used.startswith(("stable-diffusion", "cloud-api")):
+        _log(f"[VISUAL][FALLBACK] Scene {scene_index+1}: Pillow procedural")
+        _generate_pillow(scene_index, title, text, output_path, direction, width, height)
         backend_used = "pillow-fallback"
 
     if not output_path.is_file() or output_path.stat().st_size < 500:
-        raise RuntimeError(f"Visual backend produced no valid file: {output_path}")
+        raise RuntimeError(
+            f"All visual backends failed for scene {scene_index+1}: {output_path}"
+        )
 
     sha = hashlib.sha256(output_path.read_bytes()).hexdigest()
+    is_fallback = backend_used == "pillow-fallback"
     return {
-        "backend": backend_used,
-        "fallback": backend_used == "pillow-fallback",
-        "fallback_reason": fallback_reason,
-        "prompt": prompt,
-        "seed": seed,
-        "width": width,
-        "height": height,
-        "steps": steps,
+        "backend":        backend_used,
+        "fallback":       is_fallback,
+        "fallback_reason": fallback_reason if is_fallback else "",
+        "prompt":         prompt,
+        "seed":           seed,
+        "width":          width,
+        "height":         height,
+        "steps":          steps,
         "guidance_scale": guidance,
-        "elapsed_s": round(time.monotonic() - t0, 2),
-        "sha256": sha,
-        "path": str(output_path.resolve()),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "scene_index": scene_index,
-        "run_id": run_id,
+        "elapsed_s":      round(time.monotonic() - t0, 2),
+        "sha256":         sha,
+        "path":           str(output_path.resolve()),
+        "generated_at":   datetime.now(timezone.utc).isoformat(),
+        "scene_index":    scene_index,
+        "run_id":         run_id,
     }
 
 
 def backend_status() -> dict[str, Any]:
-    """Return current backend availability for the /api/status endpoint."""
-    probe = probe_sd_backend()
+    """Return current backend availability for /api/status."""
+    from .visual_api import api_status
+    probe  = probe_sd_backend()
+    api_st = api_status()
     return {
-        "sd_available": probe["available"],
-        "sd_model": probe["model_id"],
-        "sd_error": probe["error"],
-        "pillow_available": True,
-        "primary": "stable-diffusion" if probe["available"] else "pillow-fallback",
-        "tts_backends": _probe_tts(),
+        "sd_available":  probe["available"],
+        "sd_model":      probe["model_id"],
+        "sd_error":      probe["error"],
+        "cloud_api":     api_st,
+        "pillow":        True,
+        "primary":       (
+            "stable-diffusion" if probe["available"]
+            else f"cloud-api/{api_st.get('forced_backend','pollinations')}"
+            if not os.environ.get("AURELIA_FORCE_FALLBACK")
+            else "pillow-fallback"
+        ),
+        "tts_backends":  _probe_tts(),
     }
 
 

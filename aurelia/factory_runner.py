@@ -1,11 +1,12 @@
 """AURELIA Maker — FactoryRunner with ProductionLogger wired per-job.
 
-Every job gets a ProductionLogger instance.
-All log lines flow through it to:
-  1. job.logs list (streamed to WebSocket + UI)
-  2. NDJSON file in output/episode-N/job-N/production_logger.ndjson
+Key serialization rule:
+  - `_scene_assets` (dict[str, list[Path]]) lives ONLY in a closure variable,
+    never in the `data` dict that flows through the stage pipeline.
+  - All Path objects returned in `data` are str()-converted at source.
+  - This prevents PosixPath JSON serialization errors in factory.py fingerprint.
 
-Cancel flag: job.metadata["cancel_requested"] = True → checked in stage loop.
+Cancel flag: job.metadata["cancel_requested"] = True → checked per stage.
 """
 
 from __future__ import annotations
@@ -51,17 +52,11 @@ class FactoryRunner:
         self._lock = threading.Lock()
 
     def _make_logger(self, job: ProductionJob, log_dir: Path) -> ProductionLogger:
-        """Create a ProductionLogger bound to this job.
-
-        All messages emitted through it are appended to job.logs so the
-        WebSocket and UI see them in real-time.
-        """
         logger = ProductionLogger(
             job_id=job.job_id,
             episode_id=job.episode_id,
             log_dir=log_dir,
         )
-        # Monkey-patch the _write method to also sync lines into job.logs
         original_write = logger._write
 
         def _write_and_sync(record: dict, line: str) -> None:
@@ -72,7 +67,6 @@ class FactoryRunner:
 
         logger._write = _write_and_sync  # type: ignore[method-assign]
 
-        # Patch info() separately (it doesn’t call _write)
         original_info = logger.info
 
         def _info_and_sync(message: str) -> None:
@@ -86,7 +80,6 @@ class FactoryRunner:
         return logger
 
     def _log(self, job: ProductionJob, message: str) -> None:
-        """Direct log (used when no ProductionLogger is available yet)."""
         line = message.strip()
         with self._lock:
             job.logs.append(line)
@@ -98,7 +91,6 @@ class FactoryRunner:
             job.progress = max(0.0, min(100.0, progress))
 
     def _check_cancel(self, job: ProductionJob) -> None:
-        """Raise RuntimeError if stop was requested."""
         if job.metadata.get("cancel_requested"):
             raise RuntimeError("[STOP] Job cancelled by user")
 
@@ -152,9 +144,11 @@ class FactoryRunner:
             )
             if m:
                 raw = m.group(1).strip().lower()
-                if raw in {"arabic", "ar", "\u0639\u0631\u0628\u064a", "\u0627\u0644\u0639\u0631\u0628\u064a\u0629", "\u0639\u0631\u0628\u064a\u0629", "arab"}:
+                if raw in {"arabic", "ar", "\u0639\u0631\u0628\u064a", "\u0627\u0644\u0639\u0631\u0628\u064a\u0629",
+                           "\u0639\u0631\u0628\u064a\u0629", "arab"}:
                     language = "ar"
-                elif raw in {"english", "en", "\u0625\u0646\u062c\u0644\u064a\u0632\u064a", "\u0627\u0644\u0625\u0646\u062c\u0644\u064a\u0632\u064a\u0629", "eng"}:
+                elif raw in {"english", "en", "\u0625\u0646\u062c\u0644\u064a\u0632\u064a",
+                             "\u0627\u0644\u0625\u0646\u062c\u0644\u064a\u0632\u064a\u0629", "eng"}:
                     language = "en"
                 else:
                     language = raw[:2]
@@ -185,9 +179,7 @@ class FactoryRunner:
     def run_episode_production(
         self, job: ProductionJob, script_path: Path, profile: str = "both"
     ) -> dict[str, Any]:
-        from .delivery import process_delivery
         from .media import (
-            inspect_final_video_visuals,
             probe_duration,
             validate_master,
             validate_visual_manifest,
@@ -213,7 +205,6 @@ class FactoryRunner:
         factory_root = production_root / "factory"
         factory_root.mkdir(parents=True, exist_ok=True)
 
-        # ── Wire ProductionLogger to this job ──
         logger = self._make_logger(job, log_dir=production_root)
         logger.info(f"[FACTORY] Job {job.job_id} | Episode {job.episode_id} | {title}")
         logger.info(f"[FACTORY] Language: {language} | Profile: {profile}")
@@ -234,7 +225,6 @@ class FactoryRunner:
             "production_root": str(production_root),
         })
 
-        # Use logger as the EpisodeProduction log callable
         production = EpisodeProduction(
             episode_id=job.episode_id,
             root=production_root,
@@ -244,6 +234,7 @@ class FactoryRunner:
             log=logger,
         )
 
+        # Serializable-only initial state (no Path objects in values)
         state: dict[str, Any] = {
             "script": str(script_path),
             "text": production.load_script(),
@@ -257,7 +248,8 @@ class FactoryRunner:
             "source_text_sha256": source_sha256,
         }
 
-        assets: list[Path] = []
+        # Closure-only variables (NEVER put in data dict — contain Path objects)
+        _scene_assets: dict[str, list[Path]] = {}
         narration: Path | None = None
         subtitles: Path | None = None
         music: Path | None = None
@@ -268,7 +260,8 @@ class FactoryRunner:
 
         def script_processor(data: dict) -> dict:
             loaded = production.load_script().strip()
-            return {**data, "stage": "SCRIPT", "text": loaded, "source_text_sha256": source_sha256}
+            return {**data, "stage": "SCRIPT", "text": loaded,
+                    "source_text_sha256": source_sha256}
 
         def _meta(stage: str, key: str, extra: dict[str, Any] | None = None):
             def process(data: dict) -> dict:
@@ -282,24 +275,33 @@ class FactoryRunner:
                 return {**data, "stage": stage, key: payload}
             return process
 
-        development_processor = _meta("DEVELOPMENT", "development", {"grounded_in_request": True})
-        story_processor = _meta("STORY", "story", {"narrative": script_text[:500]})
-        world_processor = _meta("WORLD", "world", {"premise": script_text[:500]})
-        character_processor = _meta("CHARACTER", "character", {"source_text": script_text[:500]})
-        series_bible_processor = _meta("SERIES_BIBLE", "series_bible", {"premise": script_text[:500]})
-        research_processor = _meta("RESEARCH", "research", {"grounded_in_request": True})
-        preproduction_processor = _meta("PRE_PRODUCTION", "pre_production", {"ready": True})
+        development_processor  = _meta("DEVELOPMENT", "development",
+                                       {"grounded_in_request": True})
+        story_processor        = _meta("STORY",  "story",
+                                       {"narrative": script_text[:500]})
+        world_processor        = _meta("WORLD",  "world",
+                                       {"premise":   script_text[:500]})
+        character_processor    = _meta("CHARACTER", "character",
+                                       {"source_text": script_text[:500]})
+        series_bible_processor = _meta("SERIES_BIBLE", "series_bible",
+                                       {"premise": script_text[:500]})
+        research_processor     = _meta("RESEARCH", "research",
+                                       {"grounded_in_request": True})
+        preproduction_processor= _meta("PRE_PRODUCTION", "pre_production",
+                                       {"ready": True})
 
         def sequence_processor(data: dict) -> dict:
             production.build_scene_plan(data["text"])
             if not production.scenes:
                 raise RuntimeError("SEQUENCE produced no scenes")
             job.metadata["total_shots"] = sum(len(s.shots) for s in production.scenes)
-            return {**data, "stage": "SEQUENCE", "scene_count": len(production.scenes)}
+            return {**data, "stage": "SEQUENCE",
+                    "scene_count": len(production.scenes)}
 
         def scene_processor(data: dict) -> dict:
             job.metadata["scene_info"] = str(len(production.scenes))
-            return {**data, "stage": "SCENE", "scenes": [s.title for s in production.scenes]}
+            return {**data, "stage": "SCENE",
+                    "scenes": [s.title for s in production.scenes]}
 
         def shot_processor(data: dict) -> dict:
             return {**data, "stage": "SHOT",
@@ -312,26 +314,25 @@ class FactoryRunner:
             return {**data, "stage": "ANIMATIC"}
 
         def visual_processor(data: dict) -> dict:
-            nonlocal assets
+            nonlocal _scene_assets
             t0 = logger.stage_start("VISUAL", "generating shot visuals")
-            scene_assets = production.generate_visual_assets()
-            # Store as flat list of paths for compatibility, keyed dict for render
-            all_paths: list[Path] = []
-            for paths in scene_assets.values():
-                all_paths.extend(paths)
-            assets = all_paths
-            data["_scene_assets"] = scene_assets
-            # Report fallbacks in metadata
+            # generate_visual_assets() stores result inside production AND returns it
+            _scene_assets = production.generate_visual_assets()
+            total = sum(len(v) for v in _scene_assets.values())
+            # Report backend choice
             from .visual_backend import probe_sd_backend
             probe = probe_sd_backend()
             job.metadata["visual_backend"] = {
-                "primary": "stable-diffusion" if probe["available"] else "pillow-fallback",
+                "primary":      "stable-diffusion" if probe["available"] else "pillow-fallback",
                 "sd_available": probe["available"],
+                "sd_error":     probe["error"],
             }
-            job.metadata["outputs"] = job.metadata.get("outputs", {})
+            job.metadata.setdefault("outputs", {})
             job.metadata["outputs"]["visuals"] = str(production.dirs["visuals"])
-            logger.stage_ok("VISUAL", t0, f"{len(all_paths)} images")
-            return {**data, "stage": "VISUAL", "asset_count": len(all_paths)}
+            logger.stage_ok("VISUAL", t0, f"{total} images")
+            # Return ONLY serializable data — no Path objects
+            return {**data, "stage": "VISUAL", "asset_count": total,
+                    "visual_backend": job.metadata["visual_backend"]}
 
         def asset_processor(data: dict) -> dict:
             return {**data, "stage": "ASSET"}
@@ -353,32 +354,36 @@ class FactoryRunner:
             t0 = logger.stage_start("NARRATION", f"lang={language}")
             narration = production.synthesize_narration(data["text"])
             logger.stage_ok("NARRATION", t0, output_ref=str(narration))
-            job.metadata["outputs"] = job.metadata.get("outputs", {})
+            job.metadata.setdefault("outputs", {})
             job.metadata["outputs"]["narration"] = str(narration)
-            return {**data, "stage": "NARRATION", "narration": str(narration)}
+            return {**data, "stage": "NARRATION",
+                    "narration": str(narration)}  # str, not Path
 
         def music_processor(data: dict) -> dict:
             nonlocal music
-            from .media import generate_ambient_music, probe_duration
+            from .media import generate_ambient_music
             planned_dur = sum(s.duration for s in production.scenes) + 8.0
             music = production.dirs["audio"] / "ambient_music.wav"
             t0 = logger.stage_start("MUSIC", f"{planned_dur:.0f}s")
             generate_ambient_music(planned_dur + 4.0, music)
             logger.stage_ok("MUSIC", t0, output_ref=str(music))
-            return {**data, "stage": "MUSIC", "music": str(music)}
+            return {**data, "stage": "MUSIC",
+                    "music": str(music)}  # str, not Path
 
         def edit_processor(data: dict) -> dict:
             nonlocal edit
             if narration is None:
                 raise RuntimeError("EDIT requires narration")
-            t0 = logger.stage_start("EDIT", "concat + mix")
-            scene_assets = data.get("_scene_assets", {})
-            clips = production.render_shots(scene_assets)
+            t0 = logger.stage_start("EDIT", "render + concat + mix")
+            # Use closure variable _scene_assets (dict[str, list[Path]])
+            # NEVER re-read from data dict — data only has serialized strings
+            clips = production.render_shots(_scene_assets)
             edit = production.assemble_edit(clips, narration, music)
             logger.stage_ok("EDIT", t0, output_ref=str(edit))
-            job.metadata["outputs"] = job.metadata.get("outputs", {})
+            job.metadata.setdefault("outputs", {})
             job.metadata["outputs"]["edit"] = str(edit)
-            return {**data, "stage": "EDIT", "edit": str(edit)}
+            return {**data, "stage": "EDIT",
+                    "edit": str(edit)}  # str, not Path
 
         def color_processor(data: dict) -> dict:
             return {**data, "stage": "COLOR"}
@@ -388,7 +393,8 @@ class FactoryRunner:
             if narration is None:
                 raise RuntimeError("SUBTITLE requires narration")
             subtitles = production.build_subtitles(narration)
-            return {**data, "stage": "SUBTITLE", "srt": str(subtitles)}
+            return {**data, "stage": "SUBTITLE",
+                    "srt": str(subtitles)}  # str, not Path
 
         def master_processor(data: dict) -> dict:
             if edit is None:
@@ -397,12 +403,14 @@ class FactoryRunner:
                 raise RuntimeError("MASTER requires subtitles")
             t0 = logger.stage_start("MASTER", "grade + encode")
             outputs = production.finish(edit, subtitles)
-            final_outputs.update(outputs)
-            logger.stage_ok("MASTER", t0, output_ref=str(outputs.get("final", "")))
-            job.metadata["outputs"] = job.metadata.get("outputs", {})
+            final_outputs.update(outputs)  # Path objects in closure only
+            logger.stage_ok("MASTER", t0,
+                            output_ref=str(outputs.get("final", "")))
+            job.metadata.setdefault("outputs", {})
+            # Store as str in job.metadata
             job.metadata["outputs"].update({k: str(v) for k, v in outputs.items()})
             return {**data, "stage": "MASTER",
-                    "outputs": {k: str(v) for k, v in outputs.items()}}
+                    "outputs": {k: str(v) for k, v in outputs.items()}}  # str
 
         def qc_processor(data: dict) -> dict:
             final = final_outputs.get("youtube")
@@ -430,9 +438,12 @@ class FactoryRunner:
                 raise RuntimeError(
                     f"QC FATAL: {[c['message'] for c in qc['fatals']]}"
                 )
-            return {**data, "stage": "QC", "qc": qc}
+            return {**data, "stage": "QC", "qc_passed": qc["passed"],
+                    "qc_fatals": len(qc["fatals"]),
+                    "qc_warnings": len(qc["warnings"])}  # no Path, serializable
 
         def delivery_processor(data: dict) -> dict:
+            from .delivery import process_delivery
             final = final_outputs.get("youtube")
             if final is None:
                 raise RuntimeError("DELIVERY requires master artifact")
@@ -447,21 +458,25 @@ class FactoryRunner:
             if not validation["passed"]:
                 raise RuntimeError(f"DELIVERY rejected: {validation}")
             alias = production.dirs["delivery"] / f"episode-{job.episode_id}-FINAL.mp4"
-            from .delivery import process_delivery
             delivered = process_delivery({
-                "input": str(final), "output": str(alias),
-                "min_duration": min_dur, "expected_sha256": None,
+                "input":    str(final),
+                "output":   str(alias),
+                "min_duration": min_dur,
+                "expected_sha256": None,
             })
-            final_outputs["final"] = Path(delivered["artifact"])
+            final_outputs["final"] = Path(delivered["artifact"])  # closure only
             manifest = {
-                "job_id": job.job_id, "episode_id": job.episode_id,
-                "title": title, "language": language,
-                "profile": profile, "source": "chat",
-                "source_script": str(script_path),
+                "job_id":   job.job_id,
+                "episode_id": job.episode_id,
+                "title":    title,
+                "language": language,
+                "profile":  profile,
+                "source":   "chat",
+                "source_script":     str(script_path),
                 "source_text_sha256": source_sha256,
-                "outputs": {k: str(v) for k, v in final_outputs.items()},
+                "outputs":  {k: str(v) for k, v in final_outputs.items()},
                 "delivery_validation": delivered["validation"],
-                "directing": [scene.direction for scene in production.scenes],
+                "directing":    [scene.direction for scene in production.scenes],
                 "environments": [s.direction.get("environment", "?") for s in production.scenes],
             }
             (production.root / "production_manifest.json").write_text(
@@ -471,48 +486,49 @@ class FactoryRunner:
                 **data, "stage": "DELIVERY",
                 "artifact": str(final_outputs["final"]),
                 "manifest": str(production.root / "production_manifest.json"),
-                "delivery": delivered,
+                # Serializable delivery summary only
+                "delivery_artifact": delivered["artifact"],
             }
 
         processors = {
-            "SCRIPT": script_processor,
-            "DEVELOPMENT": development_processor,
-            "STORY": story_processor,
-            "WORLD": world_processor,
-            "CHARACTER": character_processor,
+            "SCRIPT":       script_processor,
+            "DEVELOPMENT":  development_processor,
+            "STORY":        story_processor,
+            "WORLD":        world_processor,
+            "CHARACTER":    character_processor,
             "SERIES_BIBLE": series_bible_processor,
-            "RESEARCH": research_processor,
+            "RESEARCH":     research_processor,
             "PRE_PRODUCTION": preproduction_processor,
-            "SEQUENCE": sequence_processor,
-            "SCENE": scene_processor,
-            "SHOT": shot_processor,
-            "STORYBOARD": storyboard_processor,
-            "ANIMATIC": animatic_processor,
-            "VISUAL": visual_processor,
-            "ASSET": asset_processor,
-            "CAMERA": camera_processor,
-            "DEPTH": depth_processor,
-            "MOTION": motion_processor,
-            "LIGHT": light_processor,
-            "VFX": _meta("VFX", "vfx"),
-            "ATMOSPHERE": _meta("ATMOSPHERE", "atmosphere"),
-            "NARRATION": narration_processor,
-            "DIALOGUE": _meta("DIALOGUE", "dialogue"),
-            "SOUND": _meta("SOUND", "sound"),
-            "MUSIC": music_processor,
-            "AUDIO": _meta("AUDIO", "audio"),
-            "EDIT": edit_processor,
-            "COLOR": color_processor,
-            "SUBTITLE": subtitle_processor,
-            "MASTER": master_processor,
-            "QC": qc_processor,
-            "DELIVERY": delivery_processor,
+            "SEQUENCE":     sequence_processor,
+            "SCENE":        scene_processor,
+            "SHOT":         shot_processor,
+            "STORYBOARD":   storyboard_processor,
+            "ANIMATIC":     animatic_processor,
+            "VISUAL":       visual_processor,
+            "ASSET":        asset_processor,
+            "CAMERA":       camera_processor,
+            "DEPTH":        depth_processor,
+            "MOTION":       motion_processor,
+            "LIGHT":        light_processor,
+            "VFX":          _meta("VFX",       "vfx"),
+            "ATMOSPHERE":   _meta("ATMOSPHERE", "atmosphere"),
+            "NARRATION":    narration_processor,
+            "DIALOGUE":     _meta("DIALOGUE",  "dialogue"),
+            "SOUND":        _meta("SOUND",     "sound"),
+            "MUSIC":        music_processor,
+            "AUDIO":        _meta("AUDIO",     "audio"),
+            "EDIT":         edit_processor,
+            "COLOR":        color_processor,
+            "SUBTITLE":     subtitle_processor,
+            "MASTER":       master_processor,
+            "QC":           qc_processor,
+            "DELIVERY":     delivery_processor,
         }
 
         total = len(PRODUCTION_STAGES)
         current = dict(state)
         for index, stage in enumerate(PRODUCTION_STAGES):
-            self._check_cancel(job)  # honour stop requests
+            self._check_cancel(job)
             self._set_stage(job, stage, (index / total) * 100.0)
             logger.info(f"[FACTORY] {stage} ({job.progress:.0f}%)")
             execution = pipeline.execute_stage(
@@ -526,7 +542,9 @@ class FactoryRunner:
                 run_id=run.id,
             )
             if execution.status != "COMPLETED":
-                raise RuntimeError(f"Production stage failed: {stage}: {execution.error}")
+                raise RuntimeError(
+                    f"Production stage failed: {stage}: {execution.error}"
+                )
             current.update(execution.output)
             self._set_stage(job, stage, ((index + 1) / total) * 100.0)
 
@@ -553,18 +571,20 @@ class FactoryRunner:
         job.metadata["download_url"] = f"/api/jobs/{job.job_id}/video"
         self._set_stage(job, "DELIVERY", 100.0)
         job.status = "COMPLETED"
-        logger.info(f"[FACTORY] COMPLETED — FINAL MP4: {job.final_mp4}")
+        logger.info(f"[FACTORY] COMPLETED \u2014 FINAL MP4: {job.final_mp4}")
 
         return {
-            "job_id": job.job_id, "episode_id": job.episode_id,
-            "title": title, "language": language,
+            "job_id":    job.job_id,
+            "episode_id": job.episode_id,
+            "title":     title,
+            "language":  language,
             "final_mp4": job.final_mp4,
             "download_url": job.metadata["download_url"],
-            "outputs": {k: str(v) for k, v in final_outputs.items()},
-            "scenes": len(production.scenes),
+            "outputs":   {k: str(v) for k, v in final_outputs.items()},
+            "scenes":    len(production.scenes),
             "source_text_sha256": source_sha256,
             "logger_lines": len(logger.lines),
-            "fallbacks": len(logger.fallback_summary()),
+            "fallbacks":    len(logger.fallback_summary()),
         }
 
     def execute(
@@ -596,7 +616,9 @@ class FactoryRunner:
         def worker() -> None:
             job.status = "RUNNING"
             try:
-                job.metadata["result"] = self.run_episode_production(job, script_path, profile)
+                job.metadata["result"] = self.run_episode_production(
+                    job, script_path, profile
+                )
             except RuntimeError as exc:
                 if "[STOP]" in str(exc):
                     job.status = "STOPPED"
@@ -616,17 +638,22 @@ class FactoryRunner:
         return job
 
     def handle_chat(self, message: str) -> dict[str, Any]:
-        if message.strip().lower() in {"status", "progress", "state",
-                                        "\u0627\u0644\u062d\u0627\u0644\u0629", "\u0627\u0644\u062a\u0642\u062f\u0645"}:
-            active = [j for j in self.jobs.values() if j.status in {"RUNNING", "QUEUED"}]
+        if message.strip().lower() in {
+            "status", "progress", "state",
+            "\u0627\u0644\u062d\u0627\u0644\u0629", "\u0627\u0644\u062a\u0642\u062f\u0645",
+        }:
+            active = [j for j in self.jobs.values()
+                      if j.status in {"RUNNING", "QUEUED"}]
             if not active:
                 return {"reply": "No active production.", "action": None}
             job = active[-1]
             return {
-                "reply": f"Episode {job.episode_id}: {job.status} — {job.stage} ({job.progress:.0f}%)",
+                "reply": f"Episode {job.episode_id}: {job.status} \u2014 "
+                         f"{job.stage} ({job.progress:.0f}%)",
                 "action": None, "job_id": job.job_id,
             }
         return {
-            "reply": "Use Chat production entry with Episode ID, Title, Language and the complete script.",
+            "reply": "Use Chat production entry with Episode ID, Title, Language "
+                     "and the complete script.",
             "action": "await_script",
         }

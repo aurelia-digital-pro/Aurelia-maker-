@@ -1,4 +1,4 @@
-# Python requirements for AURELIA Maker
+# AURELIA Maker — core requirements
 pyttsx3>=2.90
 pillow>=10.0.0
 pydub>=0.25.1
@@ -7,6 +7,6 @@ click>=8.1.7
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 imageio-ffmpeg>=0.4.9
-
-# Optional Local AI visual backend:
-# Install requirements-ai.txt only when using the Stable Diffusion backend.
+# Arabic RTL text shaping for subtitles and title cards
+arabic-reshaper>=3.0.0
+python-bidi>=0.4.2

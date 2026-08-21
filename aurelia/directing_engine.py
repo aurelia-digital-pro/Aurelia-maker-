@@ -1,13 +1,19 @@
 """AURELIA Maker — content-driven cinematic direction engine.
 
-Classifies every scene into one of 20+ environment types based on Arabic AND
-English keywords in the scene title and body text. This eliminates the
-"abstract fallback dominance" bug where unrecognised scenes all got the same
-blue-circle look.
-
-Each environment has its own colour palette, lens choice, camera movement,
-depth-of-field profile, and lighting recipe — so every scene type looks
-genuinely different in the final render.
+Upgrade in this revision:
+- DirectingEngine.direct() now accepts an optional scene_analysis dict
+  (from SceneAnalyzer). When provided, the analysis takes priority over
+  pure keyword matching for motion selection.
+- _MOVEMENT_POOL is preserved as LEGACY FALLBACK only (used when
+  scene_analysis is absent or when scene_index cycling is needed).
+- Movement is no longer the PRIMARY cinematic decision from this module.
+  ShotDesigner (shot_designer.py) owns motion at the shot level.
+  DirectingEngine owns environment classification, lighting, and camera
+  metadata that inform ShotDesigner.
+- Zoom range is no longer set here (hardcoded 1.0→1.08 removed).
+  zoom_start and zoom_end in MotionPlan are set by ShotDesigner per shot.
+- Environment classification retained — it informs lighting and color,
+  not shot structure.
 """
 
 from __future__ import annotations
@@ -20,13 +26,12 @@ from .lighting import AtmospherePlan, LightSource, LightingPlan
 
 
 # ---------------------------------------------------------------------------
-# Environment catalogue
-# Each entry: keywords (Arabic + English), cinematic spec
+# Environment catalogue — retained for lighting/color/depth metadata.
+# NOT the source of shot structure or motion patterns.
 # ---------------------------------------------------------------------------
 
 ENVIRONMENTS: dict[str, dict[str, Any]] = {
 
-    # ── Cosmos / Space ──────────────────────────────────────────────────────
     "space": {
         "keywords": [
             "فضاء", "كون", "نجمة", "نجوم", "مجرة", "كوكب", "الكون", "كوكب",
@@ -39,8 +44,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (0.65, "#9BB8FF"), "fill": (0.18, "#263A66"), "rim": (0.85, "#C9A86A"),
         "atmosphere": (0.0, 0.05, 0.08, 0.0),
     },
-
-    # ── Desert / Arid ───────────────────────────────────────────────────────
     "desert": {
         "keywords": [
             "صحراء", "رمال", "واحة", "كثيب", "رمل", "جفاف", "سراب",
@@ -51,8 +54,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (1.1, "#FFD580"), "fill": (0.35, "#C97A20"), "rim": (0.4, "#FF9940"),
         "atmosphere": (0.0, 0.30, 0.15, 0.0),
     },
-
-    # ── Ocean / Sea / Water ─────────────────────────────────────────────────
     "ocean": {
         "keywords": [
             "بحر", "محيط", "موج", "عمق", "بحار", "شاطئ", "ساحل",
@@ -64,8 +65,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (0.85, "#5DB4E0"), "fill": (0.30, "#0A3A5C"), "rim": (0.6, "#B0E8FF"),
         "atmosphere": (0.0, 0.20, 0.0, 0.35),
     },
-
-    # ── Forest / Nature ─────────────────────────────────────────────────────
     "forest": {
         "keywords": [
             "غابة", "شجر", "أشجار", "طبيعة", "أخضر", "نبات", "حديقة",
@@ -77,8 +76,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (0.90, "#8FD47A"), "fill": (0.28, "#1E4A18"), "rim": (0.55, "#C9FF80"),
         "atmosphere": (0.05, 0.18, 0.05, 0.10),
     },
-
-    # ── Mountain / Landscape ────────────────────────────────────────────────
     "mountain": {
         "keywords": [
             "جبل", "جبال", "قمة", "تل", "هضبة", "وادي",
@@ -90,8 +87,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (0.95, "#D0E8FF"), "fill": (0.25, "#3A5A7A"), "rim": (0.45, "#FFEECC"),
         "atmosphere": (0.0, 0.12, 0.04, 0.15),
     },
-
-    # ── City / Urban ─────────────────────────────────────────────────────────
     "city": {
         "keywords": [
             "مدينة", "شارع", "حضارة", "مجتمع", "ناطحة", "برج", "طريق",
@@ -103,8 +98,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (0.9, "#C9A86A"), "fill": (0.28, "#33435C"), "rim": (0.55, "#8FA9FF"),
         "atmosphere": (0.08, 0.22, 0.08, 0.1),
     },
-
-    # ── Home / Interior ─────────────────────────────────────────────────────
     "home": {
         "keywords": [
             "منزل", "بيت", "غرفة", "داخل", "أسرة", "عائلة", "مطبخ",
@@ -116,8 +109,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (1.0, "#FFDD99"), "fill": (0.45, "#7A5A30"), "rim": (0.3, "#FFB050"),
         "atmosphere": (0.02, 0.06, 0.02, 0.0),
     },
-
-    # ── Laboratory / Science ────────────────────────────────────────────────
     "laboratory": {
         "keywords": [
             "مختبر", "تجربة", "علم", "علمي", "مجهر", "ذرة", "معادلة",
@@ -130,8 +121,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (1.0, "#E8F0FF"), "fill": (0.35, "#6F86A8"), "rim": (0.65, "#C9A86A"),
         "atmosphere": (0.02, 0.08, 0.02, 0.0),
     },
-
-    # ── Battle / War / Conflict ─────────────────────────────────────────────
     "battle": {
         "keywords": [
             "معركة", "حرب", "قتال", "مواجهة", "انفجار", "جيش", "جندي",
@@ -143,8 +132,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (1.0, "#FF8050"), "fill": (0.30, "#3A1008"), "rim": (0.6, "#FFCC40"),
         "atmosphere": (0.15, 0.35, 0.25, 0.0),
     },
-
-    # ── Machine / Technology / Robot ─────────────────────────────────────────
     "machine": {
         "keywords": [
             "آلة", "آلات", "روبوت", "تقنية", "تكنولوجيا", "رقمي",
@@ -158,8 +145,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (0.8, "#40CCFF"), "fill": (0.20, "#102030"), "rim": (0.9, "#00FFCC"),
         "atmosphere": (0.0, 0.10, 0.0, 0.0),
     },
-
-    # ── Creature / Animal ────────────────────────────────────────────────────
     "creature": {
         "keywords": [
             "حيوان", "حيوانات", "وحش", "مخلوق", "طائر", "أسد", "ذئب",
@@ -172,8 +157,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (1.0, "#D4B06A"), "fill": (0.22, "#2A1A08"), "rim": (0.55, "#FF9A40"),
         "atmosphere": (0.03, 0.15, 0.08, 0.05),
     },
-
-    # ── Human / Person ──────────────────────────────────────────────────────
     "human": {
         "keywords": [
             "إنسان", "بشر", "عقل", "وعي", "ذاكرة", "لغة", "طفل",
@@ -186,8 +169,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (0.95, "#F2D5B0"), "fill": (0.22, "#4A4050"), "rim": (0.72, "#C9A86A"),
         "atmosphere": (0.03, 0.12, 0.03, 0.0),
     },
-
-    # ── Ancient / Historical / Civilisation ──────────────────────────────────
     "ancient": {
         "keywords": [
             "قديم", "تاريخ", "حضارة", "أهرام", "فرعون", "مسجد", "قلعة",
@@ -201,8 +182,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (1.0, "#FFCC80"), "fill": (0.30, "#402010"), "rim": (0.45, "#FFD060"),
         "atmosphere": (0.0, 0.20, 0.18, 0.0),
     },
-
-    # ── Fantasy / Magic ─────────────────────────────────────────────────────
     "fantasy": {
         "keywords": [
             "سحر", "خيال", "أسطورة", "ساحر", "جن", "سحري", "خيالي",
@@ -214,8 +193,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (0.85, "#C080FF"), "fill": (0.25, "#200840"), "rim": (0.9, "#80FFCC"),
         "atmosphere": (0.0, 0.20, 0.0, 0.0),
     },
-
-    # ── Fire / Destruction ──────────────────────────────────────────────────
     "fire": {
         "keywords": [
             "نار", "حريق", "لهب", "دمار", "إحراق", "بركان",
@@ -227,8 +204,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (1.2, "#FF4400"), "fill": (0.35, "#400800"), "rim": (1.0, "#FFAA00"),
         "atmosphere": (0.25, 0.40, 0.20, 0.0),
     },
-
-    # ── Dream / Mind / Surreal ───────────────────────────────────────────────
     "dream": {
         "keywords": [
             "حلم", "أحلام", "خيال", "ذاكرة", "لاوعي", "وعي",
@@ -240,8 +215,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (0.70, "#DDA0FF"), "fill": (0.22, "#2A1040"), "rim": (0.60, "#80D0FF"),
         "atmosphere": (0.0, 0.35, 0.0, 0.2),
     },
-
-    # ── Industry / Factory ───────────────────────────────────────────────────
     "industry": {
         "keywords": [
             "مصنع", "صناعة", "معدن", "حديد", "آلة", "محرك", "ميناء",
@@ -253,8 +226,6 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
         "key": (1.0, "#FFCC80"), "fill": (0.28, "#303030"), "rim": (0.5, "#FF8800"),
         "atmosphere": (0.10, 0.25, 0.12, 0.0),
     },
-
-    # ── Abstract / Concept / Idea  (last resort) ─────────────────────────────
     "abstract": {
         "keywords": [
             "فكرة", "معنى", "مفهوم", "سؤال", "معلومة", "معرفة", "فكر",
@@ -269,8 +240,9 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
     },
 }
 
-# Camera movement variety pool — used to add per-scene variation so consecutive
-# scenes of the same environment type do not use identical movement.
+# LEGACY FALLBACK: movement variety pool.
+# Used ONLY when scene_analysis is absent or for scene_index cycling.
+# ShotDesigner is now the primary source of motion intent per shot.
 _MOVEMENT_POOL: dict[str, list[str]] = {
     "space":      ["slow_drift", "orbit", "pull_out"],
     "desert":     ["slow_drift", "tracking", "push_in"],
@@ -294,7 +266,15 @@ _MOVEMENT_POOL: dict[str, list[str]] = {
 
 
 class DirectingEngine:
-    """Derive a stable, content-driven cinematic plan from scene semantics."""
+    """Derive a stable, content-driven cinematic plan from scene semantics.
+
+    Primary outputs used by EpisodeProduction:
+    - environment classification (for lighting/color in ai_visual + episode_engine)
+    - LightingPlan, CameraPlan, DepthPlan (metadata for render pipeline)
+
+    Motion is now ADVISORY only: it feeds into episode_engine as a fallback
+    when ShotDesigner is unavailable. ShotDesigner owns per-shot motion.
+    """
 
     def classify(self, title: str, text: str) -> str:
         haystack = f"{title} {text}".casefold()
@@ -306,18 +286,46 @@ class DirectingEngine:
         return best if scores[best] > 0 else "abstract"
 
     def _pick_movement(self, environment: str, scene_index: int) -> str:
+        """LEGACY FALLBACK movement selection — used only when ShotDesigner is absent."""
         pool = _MOVEMENT_POOL.get(environment, ["slow_drift", "tracking", "push_in"])
         return pool[scene_index % len(pool)]
 
     def direct(
-        self, scene_id: str, title: str, text: str, duration: float,
+        self,
+        scene_id: str,
+        title: str,
+        text: str,
+        duration: float,
         scene_index: int = 0,
+        scene_analysis: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Return environment + lighting + camera metadata.
+
+        scene_analysis (optional): output from SceneAnalyzer.analyze().to_dict().
+        When provided, preferred_shots[0] is used as the advisory movement;
+        otherwise legacy _MOVEMENT_POOL is used.
+        """
         environment = self.classify(title, text)
         spec = ENVIRONMENTS[environment]
 
-        # Vary camera movement within environment to prevent identical shots
-        movement = self._pick_movement(environment, scene_index)
+        # Movement: advisory only — ShotDesigner overrides at shot level
+        if scene_analysis and scene_analysis.get("preferred_shots"):
+            # Map shot type to a supported motion intent
+            shot_to_motion = {
+                "wide": "pull_out",
+                "establishing": "slow_drift",
+                "medium": "slow_push",
+                "close_up": "push_in",
+                "tracking": "tracking",
+                "pull_out": "pull_out",
+                "static": "static",
+                "over_shoulder": "slow_push",
+                "push_in": "push_in",
+            }
+            first_shot = scene_analysis["preferred_shots"][0]
+            movement = shot_to_motion.get(first_shot, self._pick_movement(environment, scene_index))
+        else:
+            movement = self._pick_movement(environment, scene_index)
 
         camera = CameraPlan(
             shot_id=scene_id,
@@ -336,32 +344,31 @@ class DirectingEngine:
             background={"role": "contextual environment"},
             depth_of_field=spec["dof"],
         )
+        # zoom_start / zoom_end are NOT set here — they are shot-level decisions
+        # owned by ShotDesigner. MotionPlan records advisory movement only.
         motion = MotionPlan(
             shot_id=scene_id,
             type=movement,
             duration=duration,
             start={"zoom": 1.0},
-            end={"zoom": 1.08 if movement not in ("tracking", "pull_out") else 1.02},
+            end={"zoom": 1.0},   # ShotDesigner will override
             easing=spec["easing"],
         )
 
-        key_i, key_c = spec["key"]
+        key_i,  key_c  = spec["key"]
         fill_i, fill_c = spec["fill"]
-        rim_i, rim_c = spec["rim"]
+        rim_i,  rim_c  = spec["rim"]
         fog, haze, dust, humidity = spec["atmosphere"]
         atmosphere = AtmospherePlan(
             shot_id=scene_id,
-            fog=fog,
-            haze=haze,
-            dust=dust,
-            humidity=humidity,
+            fog=fog, haze=haze, dust=dust, humidity=humidity,
             temperature=0.0,
         )
         lighting = LightingPlan(
             shot_id=scene_id,
-            key=LightSource(name="key", type="area", intensity=key_i, color=key_c),
+            key=LightSource(name="key",  type="area", intensity=key_i,  color=key_c),
             fill=LightSource(name="fill", type="area", intensity=fill_i, color=fill_c),
-            rim=LightSource(name="rim", type="area", intensity=rim_i, color=rim_c),
+            rim=LightSource(name="rim",  type="area", intensity=rim_i,  color=rim_c),
             atmosphere=atmosphere,
         )
 
@@ -371,10 +378,10 @@ class DirectingEngine:
 
         return {
             "environment": environment,
-            "camera": asdict(camera),
-            "depth": asdict(depth),
-            "motion": asdict(motion),
-            "lighting": asdict(lighting),
+            "camera":      asdict(camera),
+            "depth":       asdict(depth),
+            "motion":      asdict(motion),
+            "lighting":    asdict(lighting),
         }
 
 

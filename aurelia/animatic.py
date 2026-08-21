@@ -1,4 +1,13 @@
-"""AURELIA Maker — production animatic domain."""
+"""AURELIA Maker — production animatic domain.
+
+Upgrade:
+- AnimaticClip.transition is no longer hardcoded to \"cut\".
+- Transition value is supplied by ShotDesigner / episode_engine from
+  ShotSpec.transition_in / transition_out (which are content-driven).
+- Default is still \"cut\" to preserve backward compatibility with
+  any existing callers that do not set transition.
+- Added TransitionType constants for type-safe references.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +15,22 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 import json
 import uuid
+
+
+# Canonical transition types supported by the assembly pipeline
+class TransitionType:
+    CUT     = "cut"
+    DISSOLVE = "dissolve"
+    FADE    = "fade"
+    FADE_IN = "fade_in"
+
+    ALL = {CUT, DISSOLVE, FADE, FADE_IN}
+
+    @classmethod
+    def normalise(cls, value: str) -> str:
+        """Return a valid transition type; fall back to CUT for unknown values."""
+        cleaned = str(value).strip().lower()
+        return cleaned if cleaned in cls.ALL else cls.CUT
 
 
 @dataclass
@@ -17,7 +42,9 @@ class AnimaticClip:
     start: float = 0.0
     duration: float = 0.0
     audio_ref: str = ""
-    transition: str = "cut"
+    # Content-driven transition — NOT forced to \"cut\".
+    # Set by ShotDesigner via ShotSpec.transition_in.
+    transition: str = TransitionType.CUT
 
     @property
     def end(self) -> float:
@@ -25,11 +52,12 @@ class AnimaticClip:
 
     def validate(self) -> dict[str, Any]:
         checks = {
-            "shot_present": bool(self.shot_id),
+            "shot_present":           bool(self.shot_id),
             "storyboard_frame_present": bool(self.storyboard_frame_id),
-            "source_present": bool(self.source_ref),
-            "start_valid": self.start >= 0,
-            "duration_valid": self.duration > 0,
+            "source_present":         bool(self.source_ref),
+            "start_valid":            self.start >= 0,
+            "duration_valid":         self.duration > 0,
+            "transition_valid":       self.transition in TransitionType.ALL,
         }
         return {"passed": all(checks.values()), "checks": checks}
 
@@ -53,12 +81,12 @@ class Animatic:
     def validate(self) -> dict[str, Any]:
         checks = {
             "storyboard_present": bool(self.storyboard_id),
-            "version_valid": self.version > 0,
-            "frame_rate_valid": self.frame_rate > 0,
-            "clips_valid": all(
+            "version_valid":      self.version > 0,
+            "frame_rate_valid":   self.frame_rate > 0,
+            "clips_valid":        all(
                 clip.validate()["passed"] for clip in self.clips
             ),
-            "timeline_valid": self._timeline_valid(),
+            "timeline_valid":     self._timeline_valid(),
         }
 
         self.validation = {

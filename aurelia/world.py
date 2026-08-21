@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 import json
 import uuid
+import re
 
 
 @dataclass
@@ -212,3 +213,58 @@ class WorldRepository:
 
         repository.validate()
         return repository
+
+
+# Compatibility: build_world_context required by factory_runner
+def _detect_time_period(text: str) -> str:
+    lower = text.lower()
+    if re.search(r"\b(19|20)\d{2}\b", lower):
+        m = re.search(r"\b(19|20)\d{2}\b", lower)
+        if m:
+            return f"{m.group(0)}s"
+    if any(k in lower for k in ["ancient", "medieval", "renaissance", "future", "futuristic", "modern", "contemporary"]):
+        if "ancient" in lower or "medieval" in lower:
+            return "ancient"
+        if "future" in lower or "futuristic" in lower:
+            return "future"
+        if "modern" in lower or "contemporary" in lower:
+            return "modern"
+    return "unspecified"
+
+
+def _detect_setting(text: str) -> str:
+    keywords = ["city", "desert", "ocean", "sea", "space", "lab", "laboratory", "forest", "village", "mountain", "island", "jungle", "subway", "airport"]
+    lower = text.lower()
+    for k in keywords:
+        if k in lower:
+            return k
+    arabic_map = {"مدينة": "city", "صحراء": "desert", "بحر": "ocean", "فضاء": "space", "غابة": "forest"}
+    for ar, en in arabic_map.items():
+        if ar in text:
+            return en
+    return "unspecified"
+
+
+def _detect_atmosphere(text: str) -> str:
+    lower = text.lower()
+    if any(w in lower for w in ["tense", "tension", "suspense", "mysterious", "mystery", "ominous"]):
+        return "tense"
+    if any(w in lower for w in ["peaceful", "calm", "serene", "tranquil"]):
+        return "calm"
+    if any(w in lower for w in ["dream", "surreal", "fantasy", "magical"]):
+        return "surreal"
+    if any(w in lower for w in ["documentary", "informative", "factual"]):
+        return "informative"
+    return "neutral"
+
+
+def build_world_context(text: str) -> dict:
+    """Return minimal world context: setting, time_period, atmosphere."""
+    body = "\n".join(
+        line for line in text.splitlines()
+        if not re.match(r'^\s*(?:title|language|lang|العنوان|اللغة)\s*[:=]', line, re.IGNORECASE)
+    ).strip()
+    setting = _detect_setting(body)
+    time_period = _detect_time_period(body)
+    atmosphere = _detect_atmosphere(body)
+    return {"setting": setting, "time_period": time_period, "atmosphere": atmosphere}

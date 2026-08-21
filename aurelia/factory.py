@@ -21,9 +21,44 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _make_serializable(obj: Any) -> Any:
+    """Recursively convert non-JSON-serializable objects to serializable form.
+
+    Handles: Path, set, frozenset, dataclasses, bytes, numpy scalars.
+    Does NOT use default=str to hide type bugs — each type is handled explicitly.
+    """
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, bytes):
+        return obj.hex()
+    if isinstance(obj, (set, frozenset)):
+        return sorted(_make_serializable(v) for v in obj)
+    if isinstance(obj, (list, tuple)):
+        return [_make_serializable(v) for v in obj]
+    if isinstance(obj, dict):
+        return {str(k): _make_serializable(v) for k, v in obj.items()}
+    if hasattr(obj, "__dataclass_fields__"):
+        return _make_serializable(asdict(obj))
+    # numpy / torch scalar
+    if hasattr(obj, "item") and callable(obj.item):  # type: ignore[union-attr]
+        try:
+            return obj.item()  # type: ignore[union-attr]
+        except Exception:
+            pass
+    # Enum
+    if hasattr(obj, "value") and hasattr(obj, "name") and type(obj).__bases__:
+        try:
+            import enum
+            if isinstance(obj, enum.Enum):
+                return obj.value
+        except Exception:
+            pass
+    return obj
+
+
 def canonical_json(value: Any) -> str:
     return json.dumps(
-        value,
+        _make_serializable(value),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -109,9 +144,7 @@ class FactoryStore:
         if not self.logger.handlers:
             handler = logging.FileHandler(self.log_dir / "factory.log")
             handler.setFormatter(
-                logging.Formatter(
-                    "%(asctime)s %(levelname)s %(message)s"
-                )
+                logging.Formatter("%(asctime)s %(levelname)s %(message)s")
             )
             self.logger.addHandler(handler)
             self.logger.setLevel(logging.INFO)
@@ -126,7 +159,7 @@ class FactoryStore:
         temporary = self.state_path.with_suffix(".tmp")
         temporary.write_text(
             json.dumps(
-                state,
+                _make_serializable(state),
                 indent=2,
                 ensure_ascii=False,
                 sort_keys=True,
@@ -140,17 +173,13 @@ class FactoryStore:
         raw = state["executions"].get(cache_key)
         if raw is None:
             return None
-
-        artifacts = [
-            ArtifactRecord(**item)
-            for item in raw.get("artifacts", [])
-        ]
+        artifacts = [ArtifactRecord(**item) for item in raw.get("artifacts", [])]
         raw["artifacts"] = artifacts
         return ExecutionRecord(**raw)
 
     def put(self, record: ExecutionRecord) -> None:
         state = self._read_state()
-        data = asdict(record)
+        data = _make_serializable(asdict(record))
         state["executions"][record.cache_key] = data
         self._write_state(state)
 
@@ -165,45 +194,26 @@ class FactoryStore:
 class FactoryExecutor:
     """Executes real processors with validation, retry, cache and recovery."""
 
-    def __init__(
-        self,
-        store: FactoryStore,
-        max_retries: int = 2,
-    ):
+    def __init__(self, store: FactoryStore, max_retries: int = 2):
         if max_retries < 0:
             raise ValueError("max_retries must be >= 0")
-
         self.store = store
         self.max_retries = max_retries
 
-    def _validate_processor(
-        self,
-        processor: Processor | None,
-    ) -> None:
+    def _validate_processor(self, processor: Processor | None) -> None:
         if not callable(processor):
             raise TypeError(
                 "A real callable processor is required; "
                 "placeholder processors are not permitted"
             )
 
-    def _validate_validator(
-        self,
-        validator: Validator | None,
-    ) -> None:
+    def _validate_validator(self, validator: Validator | None) -> None:
         if not callable(validator):
-            raise TypeError(
-                "A real callable validator is required"
-            )
+            raise TypeError("A real callable validator is required")
 
-    def _record_artifact(
-        self,
-        path: Path,
-        stage: str,
-        artifact_id: str,
-    ) -> ArtifactRecord:
+    def _record_artifact(self, path: Path, stage: str, artifact_id: str) -> ArtifactRecord:
         if not path.exists():
             raise FileNotFoundError(str(path))
-
         return ArtifactRecord(
             artifact_id=artifact_id,
             path=str(path),
@@ -229,12 +239,9 @@ class FactoryExecutor:
         if not isinstance(input_data, dict):
             raise TypeError("input_data must be a dict")
 
-        cache_key = fingerprint(
-            {
-                "context": context.key(),
-                "input": input_data,
-            }
-        )
+        # Sanitize before fingerprinting — removes Path/set/etc from cache key
+        safe_input = _make_serializable(input_data)
+        cache_key = fingerprint({"context": context.key(), "input": safe_input})
 
         cached = self.store.get(cache_key)
         if (
@@ -245,10 +252,7 @@ class FactoryExecutor:
         ):
             self.store.logger.info(
                 "CACHE HIT stage=%s unit=%s/%s key=%s",
-                context.stage,
-                context.unit_type,
-                context.unit_id,
-                cache_key,
+                context.stage, context.unit_type, context.unit_id, cache_key,
             )
             return cached
 
@@ -259,7 +263,7 @@ class FactoryExecutor:
             unit_type=context.unit_type,
             unit_id=context.unit_id,
             status="RUNNING",
-            input_fingerprint=fingerprint(input_data),
+            input_fingerprint=fingerprint(safe_input),
         )
 
         last_error = ""
@@ -270,68 +274,52 @@ class FactoryExecutor:
             try:
                 self.store.logger.info(
                     "EXECUTE stage=%s unit=%s/%s attempt=%s",
-                    context.stage,
-                    context.unit_type,
-                    context.unit_id,
-                    attempt,
+                    context.stage, context.unit_type, context.unit_id, attempt,
                 )
 
                 output = processor(dict(input_data))
 
                 if not isinstance(output, dict):
-                    raise TypeError(
-                        "Processor must return a dict"
-                    )
+                    raise TypeError("Processor must return a dict")
 
                 if not validator(output):
-                    raise ValueError(
-                        "Stage validation failed"
-                    )
+                    raise ValueError("Stage validation failed")
 
                 records: list[ArtifactRecord] = []
-
                 for index, path in enumerate(artifact_paths or []):
                     records.append(
                         self._record_artifact(
-                            Path(path),
-                            context.stage,
+                            Path(path), context.stage,
                             f"{execution.execution_id}-{index + 1}",
                         )
                     )
 
                 execution.status = "COMPLETED"
-                execution.output_fingerprint = fingerprint(output)
+                # Sanitize output before storing (no Path/set in JSON)
+                safe_output = _make_serializable(output)
+                execution.output_fingerprint = fingerprint(safe_output)
                 execution.artifacts = records
                 execution.metadata = {
-                    "output": output,
+                    "output": safe_output,
                     "deterministic_key": cache_key,
                 }
 
                 self.store.put(execution)
-
                 self.store.logger.info(
                     "COMPLETED stage=%s unit=%s/%s",
-                    context.stage,
-                    context.unit_type,
-                    context.unit_id,
+                    context.stage, context.unit_type, context.unit_id,
                 )
-
                 return execution
 
             except Exception as exc:
                 last_error = str(exc)
                 execution.error = last_error
                 execution.status = "FAILED"
-
                 self.store.logger.error(
                     "FAILED stage=%s unit=%s/%s attempt=%s error=%s",
-                    context.stage,
-                    context.unit_type,
-                    context.unit_id,
-                    attempt,
-                    last_error,
+                    context.stage, context.unit_type, context.unit_id,
+                    attempt, last_error,
                 )
-
                 if attempt <= self.max_retries:
                     time.sleep(0.05 * attempt)
                     continue
@@ -339,28 +327,16 @@ class FactoryExecutor:
         self.store.put(execution)
         return execution
 
-    def recover(
-        self,
-        context: ExecutionContext,
-    ) -> ExecutionRecord | None:
+    def recover(self, context: ExecutionContext) -> ExecutionRecord | None:
         record = self.store.get(
-            fingerprint(
-                {
-                    "context": context.key(),
-                    "input": {},
-                }
-            )
+            fingerprint({"context": context.key(), "input": {}})
         )
         return record
 
 
 def deterministic_build_key(
-    project: str,
-    unit_type: str,
-    unit_id: str,
-    stage: str,
-    input_data: dict[str, Any],
-    configuration: dict[str, Any],
+    project: str, unit_type: str, unit_id: str, stage: str,
+    input_data: dict[str, Any], configuration: dict[str, Any],
 ) -> str:
     return fingerprint(
         {
@@ -374,128 +350,66 @@ def deterministic_build_key(
     )
 
 
-__all__ = [
-    "ArtifactRecord",
-    "ExecutionContext",
-    "ExecutionRecord",
-    "FactoryExecutor",
-    "FactoryStore",
-    "canonical_json",
-    "deterministic_build_key",
-    "file_hash",
-    "fingerprint",
-    "sha256_bytes",
-]
-
-
-
-
 class ProductionFactory(FactoryStore):
+    """Unified production factory entry point."""
 
-    def create_manifest(self, episode_id="", title=""):
-        from .production import ProductionManifest
+    def __init__(self, root: str | Path = "."):
+        super().__init__(Path(root))
 
+    def create_manifest(self, episode_id: str = "", title: str = "") -> Any:
+        from .production import ProductionManifest  # type: ignore
         manifest = ProductionManifest()
         if hasattr(manifest, "episode_id"):
             manifest.episode_id = episode_id
         if hasattr(manifest, "title"):
             manifest.title = title
-
         self.manifest = manifest
         return manifest
 
-    def save(self):
-        if hasattr(self, "_save"):
-            return self._save()
-
-        if hasattr(self, "state"):
-            state = self.state
-            if hasattr(state, "save"):
-                return state.save()
-
+    def save(self) -> Any:
         root = Path(self.root)
         root.mkdir(parents=True, exist_ok=True)
-
         state_path = root / "factory-state.json"
-        state_path.write_text(
-            "{}",
-            encoding="utf-8",
-        )
+        if not state_path.exists():
+            state_path.write_text("{}", encoding="utf-8")
         return state_path
-    """Unified production factory entry point."""
-
-    def __init__(self, root="."):
-        super().__init__(root)
 
 
-def create_production_orchestrator(
-    root: str | Path,
-    max_retries: int = 2,
-):
-    """Create the canonical production orchestrator."""
-
+def create_production_orchestrator(root: str | Path, max_retries: int = 2) -> Any:
     from .orchestrator import ProductionOrchestrator
-
-    return ProductionOrchestrator(
-        root=root,
-        max_retries=max_retries,
-    )
+    return ProductionOrchestrator(root=root, max_retries=max_retries)
 
 
-__all__ = [
-    "ExecutionContext",
-    "ArtifactRecord",
-    "ExecutionRecord",
-    "FactoryStore",
-    "FactoryExecutor",
-    "deterministic_build_key",
-    "create_production_orchestrator",
-]
+def build_canonical_production_pipeline(root: str | Path, max_retries: int = 2) -> Any:
+    from .production_pipeline import build_production_pipeline
+    return build_production_pipeline(root=Path(root), max_retries=max_retries)
 
 
-def production_contracts():
-    """Return the canonical validated production contracts."""
-
-    from .production_contract import (
-        build_production_contracts,
-        validate_production_contracts,
-    )
-
+def production_contracts() -> Any:
+    from .production_contract import build_production_contracts, validate_production_contracts
     contracts = build_production_contracts()
     result = validate_production_contracts(contracts)
-
     if not result["valid"]:
         raise RuntimeError(
-            "Invalid production contracts: "
-            + "; ".join(result["errors"])
+            "Invalid production contracts: " + "; ".join(result["errors"])
         )
-
     return contracts
 
 
-__all__.append("production_contracts")
-
-
-def build_canonical_production_pipeline(
-    root: str | Path,
-    max_retries: int = 2,
-):
-    """Build the canonical end-to-end production pipeline."""
-
-    from .production_pipeline import build_production_pipeline
-
-    return build_production_pipeline(
-        root=Path(root),
-        max_retries=max_retries,
-    )
-
-
 __all__ = [
     "ArtifactRecord",
     "ExecutionContext",
     "ExecutionRecord",
     "FactoryStore",
     "FactoryExecutor",
+    "ProductionFactory",
+    "canonical_json",
     "deterministic_build_key",
+    "file_hash",
+    "fingerprint",
+    "sha256_bytes",
+    "_make_serializable",
     "build_canonical_production_pipeline",
+    "create_production_orchestrator",
+    "production_contracts",
 ]

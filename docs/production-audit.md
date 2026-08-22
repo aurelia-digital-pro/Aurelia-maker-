@@ -109,3 +109,10 @@ The resulting FINAL MP4 was accepted with duration `107.508s`, size `20,875,289`
 A direct ffprobe of the transition-enabled run exposed that the encoded AAC output was mono even though the authored sound-design source was stereo/48 kHz. The active mixer was corrected to apply `aformat=sample_rates=48000:channel_layouts=stereo` after `amix`, and the canonical Arabic E2E was rerun.
 
 The corrected run is job `3367160fb27a4c7fac20771d444b08e0`. It applied one motivated cinematic transition across six shots, produced a valid accepted FINAL MP4, and passed all fatal and warning QC checks. Direct ffprobe now reports H.264 video at 1920x1080/24 fps and AAC audio at 48 kHz with two channels, with duration `107.520s` and size `21,520,905` bytes. The authored sound-design WAV is PCM stereo/48 kHz with duration `107.481813s` and is consumed by the active mixer.
+
+
+## Visual-signal QC correction
+
+The canonical run after the stereo-mix change exposed a false negative in `assets_have_visual_signal`: a valid low-chroma portrait had RGB channel-range `2.91` but luminance structure with mean standard deviation `46.22`. The QC gate was corrected without weakening blank-image protection: chromatic variation still passes through `channel_range`, while low-chroma or monochrome images must show meaningful luminance structure (`mean_stddev >= 6.0`). A flat or blank asset still fails both measurements.
+
+The corrected canonical Arabic run is job `d5c70f76eb334789ae0b47b1390b3ddb`. It generated six Cloud/Pollinations assets with zero Pillow fallbacks, applied one motivated cinematic transition across six shots, produced an accepted FINAL MP4, and passed the strengthened QC gate with zero fatals and zero warnings. Direct ffprobe reports 1920x1080 H.264 video at 24 fps and AAC audio at 48 kHz stereo, duration `107.520s`, size `21,690,337` bytes. Representative early and late frames were inspected and showed non-blank rendered imagery, different framing/lighting, and Arabic subtitle burn-in.

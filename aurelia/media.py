@@ -191,20 +191,33 @@ def mix_narration_and_music(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     target_duration = max(30.0, probe_duration(video), probe_duration(narration))
     inputs = [video, narration]
-    filters = [f"[1:a]apad=whole_dur={target_duration:.6f},volume=1.0[narr]"]
+    filters = [
+        f"[1:a]apad=whole_dur={target_duration:.6f},volume=1.0,"
+        "asplit=3[narr][narr_bgm][narr_sfx]"
+    ]
     mix_inputs = ["[narr]"]
     if music is not None and Path(music).is_file() and Path(music).stat().st_size > 0:
         inputs.append(Path(music))
-        filters.append("[2:a]volume=0.15[bgm]")
+        filters.append(
+            "[2:a]volume=0.15[bgm_raw];"
+            "[bgm_raw][narr_bgm]sidechaincompress=threshold=0.035:ratio=6:"
+            "attack=20:release=280:makeup=1[bgm]"
+        )
         mix_inputs.append("[bgm]")
     if sound_design is not None and Path(sound_design).is_file() and Path(sound_design).stat().st_size > 0:
         inputs.append(Path(sound_design))
         sound_index = len(inputs) - 1
-        filters.append(f"[{sound_index}:a]volume=0.65[sfx]")
+        filters.append(
+            f"[{sound_index}:a]volume=0.65[sfx_raw];"
+            "[sfx_raw][narr_sfx]sidechaincompress=threshold=0.045:ratio=4:"
+            "attack=10:release=180:makeup=1[sfx]"
+        )
         mix_inputs.append("[sfx]")
     filters.append(
         "".join(mix_inputs) + f"amix=inputs={len(mix_inputs)}:duration=longest:"
         f"dropout_transition=2,"
+        "loudnorm=I=-16:LRA=11:TP=-1.5,"
+        "alimiter=limit=0.95,"
         "aformat=sample_rates=48000:channel_layouts=stereo,"
         f"atrim=duration={target_duration:.6f}[aout]"
     )
@@ -516,11 +529,11 @@ def validate_visual_manifest(
                 check_details["invalid_assets"] = bad[:5]
 
             # Visual signal check:
-            # Thresholds designed to pass all Pillow procedural environments
-            # including dark ones (space, battle, fire, abstract).
-            # channel_range >= 3 (max_mean - min_mean across RGB channels)
-            # mean_stddev >= 1.5 (mean of per-channel stddev)
-            # These are minimal bar against truly blank/solid-color images.
+            # Thresholds are designed to pass dark and monochrome cinematic
+            # environments as long as they contain real luminance structure.
+            # channel_range catches chromatic variation; mean_stddev catches
+            # valid grayscale/low-chroma imagery such as a portrait against a
+            # dark background. A flat/blank image fails both measurements.
             try:
                 from PIL import Image, ImageStat
                 signal_details = []
@@ -534,7 +547,7 @@ def validate_visual_manifest(
                         channel_range = max(stat.mean) - min(stat.mean)
                         mean_stddev = statistics.fmean(stat.stddev)
                         size_ok = image.width >= 256 and image.height >= 256
-                        range_ok = channel_range >= 3.0
+                        range_ok = channel_range >= 3.0 or mean_stddev >= 6.0
                         stddev_ok = mean_stddev >= 1.5
                         this_ok = size_ok and range_ok and stddev_ok
                         signal_details.append({

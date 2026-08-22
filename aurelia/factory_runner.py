@@ -228,6 +228,8 @@ class FactoryRunner:
         production_root.mkdir(parents=True, exist_ok=False)
         factory_root = production_root / "factory"
         factory_root.mkdir(parents=True, exist_ok=True)
+        stage_artifacts_root = factory_root / "stage_artifacts"
+        stage_artifacts_root.mkdir(parents=True, exist_ok=True)
 
         logger = self._make_logger(job, log_dir=production_root)
         logger.info(f"[FACTORY] Job {job.job_id} | Episode {job.episode_id} | {title}")
@@ -545,6 +547,8 @@ class FactoryRunner:
                 "source_script":     str(script_path),
                 "source_text_sha256": source_sha256,
                 "outputs":  {k: str(v) for k, v in final_outputs.items()},
+                "stage_artifacts": str(stage_artifacts_root),
+                "stage_artifact_count": len(list(stage_artifacts_root.glob("*.json"))),
                 "delivery_validation": delivered["validation"],
                 "directing":    [scene.direction for scene in production.scenes],
                 "environments": [s.direction.get("environment", "?") for s in production.scenes],
@@ -559,6 +563,19 @@ class FactoryRunner:
                 # Serializable delivery summary only
                 "delivery_artifact": delivered["artifact"],
             }
+
+        def tracked_processor(stage_name: str, processor):
+            """Persist each stage result as an auditable downstream input."""
+            def run_tracked(data: dict) -> dict:
+                result = processor(data)
+                artifact_index = len(list(stage_artifacts_root.glob("*.json"))) + 1
+                artifact_path = stage_artifacts_root / f"{artifact_index:03d}_{stage_name}.json"
+                artifact_path.write_text(
+                    json.dumps(result, indent=2, ensure_ascii=False, default=str),
+                    encoding="utf-8",
+                )
+                return {**result, "stage_artifact": str(artifact_path)}
+            return run_tracked
 
         processors = {
             "SCRIPT":       script_processor,
@@ -607,7 +624,7 @@ class FactoryRunner:
                 unit_type="production_stage",
                 unit_id=f"{job.job_id}:{stage}",
                 input_data=current,
-                processor=processors[stage],
+                processor=tracked_processor(stage, processors[stage]),
                 validator=lambda result: isinstance(result, dict) and bool(result),
                 run_id=run.id,
             )

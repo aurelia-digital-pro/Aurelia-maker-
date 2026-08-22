@@ -22,7 +22,7 @@ def without_identity(value: Any) -> Any:
         return {
             key: without_identity(item)
             for key, item in value.items()
-            if key != "shot_id"
+            if key not in {"shot_id", "id"}
         }
     if isinstance(value, list):
         return [without_identity(item) for item in value]

@@ -289,6 +289,25 @@ class CinematicVisualEngine:
         blur = float(atmosphere.get("blur") or vfx.get("blur") or 0.0)
         if blur > 0:
             filters.append(f"gblur=sigma={min(blur, 12.0):.4f}")
+
+        # These are deliberately subtle, deterministic finishing operations.
+        # They are part of the encoded filter graph, rather than metadata-only
+        # stage labels, so the viewer sees them in the final MP4.
+        vignette = min(max(float(vfx.get("vignette", 0.0) or 0.0), 0.0), 1.0)
+        if vignette > 0:
+            filters.append(f"vignette=angle=PI/{max(2.0, 5.0 - vignette * 2.0):.3f}")
+
+        grain = min(max(float(vfx.get("grain", 0.0) or 0.0), 0.0), 0.15)
+        if grain > 0:
+            filters.append(f"noise=alls={grain * 100.0:.3f}:allf=t+u")
+
+        bloom = min(max(float(vfx.get("bloom", 0.0) or 0.0), 0.0), 0.35)
+        if bloom > 0:
+            filters.extend([
+                "split=2[base][glow]",
+                f"[glow]gblur=sigma={1.5 + bloom * 8.0:.3f}[glowblur]",
+                f"[base][glowblur]blend=all_mode=screen:all_opacity={bloom:.3f}",
+            ])
         return filters
 
 

@@ -62,6 +62,66 @@ def concat_clips(clips: list[str | Path], output: str | Path) -> Path:
     return output_path
 
 
+def assemble_cinematic_clips(
+    clips: list[str | Path],
+    transitions: list[str] | None,
+    output: str | Path,
+    transition_duration: float = 0.6,
+) -> Path:
+    """Assemble rendered shots with real cut/dissolve/fade transitions.
+
+    ``transitions`` contains one transition for every boundary between clips.
+    Cut boundaries use the concat demuxer; non-cut boundaries use FFmpeg's
+    xfade filter so the transition is present in the encoded video, not only
+    in metadata or logs.
+    """
+    if not clips:
+        raise ValueError("No clips supplied")
+    normalised = [_require_file(c, "Cinematic clip") for c in clips]
+    boundary_transitions = list(transitions or [])
+    boundary_transitions.extend(["cut"] * max(0, len(normalised) - 1 - len(boundary_transitions)))
+    current = normalised[0]
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    for index, next_clip in enumerate(normalised[1:]):
+        transition = str(boundary_transitions[index]).strip().lower()
+        if transition in {"cut", "none", ""}:
+            step_output = output_path.parent / f".cinematic-step-{index:03d}.mp4"
+            concat_clips([current, next_clip], step_output)
+        else:
+            duration_a = probe_duration(current)
+            duration_b = probe_duration(next_clip)
+            overlap = min(max(float(transition_duration), 0.1), duration_a / 3.0, duration_b / 3.0)
+            xfade_name = {
+                "dissolve": "fade",
+                "fade_in": "fade",
+                "fade_out": "fadeblack",
+                "fade": "fadeblack",
+                "light": "fadewhite",
+                "light_transition": "fadewhite",
+            }.get(transition, "fade")
+            step_output = output_path.parent / f".cinematic-step-{index:03d}.mp4"
+            graph = (
+                f"[0:v]settb=AVTB,setpts=PTS-STARTPTS[v0];"
+                f"[1:v]settb=AVTB,setpts=PTS-STARTPTS[v1];"
+                f"[v0][v1]xfade=transition={xfade_name}:duration={overlap:.4f}:"
+                f"offset={max(0.0, duration_a - overlap):.4f},format=yuv420p[v]"
+            )
+            _run([
+                "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(current), "-i", str(next_clip),
+                "-filter_complex", graph, "-map", "[v]", "-an",
+                "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                "-pix_fmt", "yuv420p", str(step_output),
+            ], step_output)
+        current = step_output
+
+    if current != output_path:
+        _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(current), "-c", "copy", str(output_path)], output_path)
+    return output_path
+
+
 def pad_video_to_duration(source: str | Path, output: str | Path, duration: float) -> Path:
     source = _require_file(source, "Video")
     output_path = Path(output)
@@ -579,7 +639,7 @@ def inspect_final_video_visuals(video: str | Path) -> dict:
 
 
 __all__ = [
-    "concat_clips", "pad_video_to_duration", "mix_narration_and_music",
+    "concat_clips", "assemble_cinematic_clips", "pad_video_to_duration", "mix_narration_and_music",
     "apply_color_grade", "burn_subtitles", "master_encode",
     "generate_ambient_music", "probe_duration", "probe_has_audio",
     "validate_master", "validate_visual_manifest",

@@ -30,6 +30,7 @@ from .media import (
     master_encode,
     mix_narration_and_music,
     pad_video_to_duration,
+    assemble_cinematic_clips,
     probe_duration,
     validate_master,
     validate_visual_manifest,
@@ -406,6 +407,7 @@ class EpisodeProduction:
         self._emit("Rendering cinematic shots (content-driven motion per shot)...")
         engine = CinematicVisualEngine()
         all_clips: list[Path] = []
+        boundary_transitions: list[str] = []
 
         for scene in self.scenes:
             direction     = scene.direction
@@ -458,13 +460,27 @@ class EpisodeProduction:
                     depth={"depth_of_field": dof},
                     lighting={"brightness": brightness, "contrast": contrast,
                                "saturation": saturation},
-                    atmosphere={"blur": atm_haze * 0.8},
-                    vfx={"blur": atm_fog * 0.4},
+                    atmosphere={"blur": atm_haze * 0.8, "haze": atm_haze, "fog": atm_fog},
+                    vfx={
+                        "blur": atm_fog * 0.4,
+                        "grain": 0.025 if environment not in {"dream", "fantasy"} else 0.015,
+                        "vignette": 0.22 if environment not in {"ocean", "space"} else 0.14,
+                        "bloom": 0.10 if float(key.get("intensity", 0.7)) > 0.75 else 0.06,
+                    },
                 )
+                if all_clips:
+                    boundary_transitions.append(
+                        str(shot_dict.get("transition_in") or "cut")
+                    )
                 all_clips.append(out)
 
         if not all_clips:
             raise RuntimeError("render_shots produced no clips")
+        self._shot_transitions = boundary_transitions
+        self._emit(
+            f"  Applied {sum(t not in {'cut', 'none', ''} for t in boundary_transitions)} "
+            f"cinematic transitions across {len(all_clips)} shots"
+        )
         return all_clips
 
     def assemble_edit(
@@ -472,7 +488,8 @@ class EpisodeProduction:
     ) -> Path:
         self._emit("Editing — concatenating shots and mixing audio...")
         video_only = self.dirs["edit"] / "video_concat.mp4"
-        concat_clips(clips, video_only)
+        transitions = getattr(self, "_shot_transitions", None) or ["cut"] * max(0, len(clips) - 1)
+        assemble_cinematic_clips(clips, transitions, video_only)
         target_duration = max(30.0, probe_duration(narration_path))
         padded_video = self.dirs["edit"] / "video_padded.mp4"
         pad_video_to_duration(video_only, padded_video, target_duration)

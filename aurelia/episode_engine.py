@@ -311,8 +311,16 @@ class EpisodeProduction:
             f" {total_images - total_resumed - total_fallbacks} new via SD/API)"
         )
 
+        # Derive the top-level backend label from what actually ran, instead of
+        # hardcoding "local-ai" — per-scene provenance already records the real
+        # backend (e.g. "stable-diffusion", "cloud-api/pollinations",
+        # "pillow-fallback") and must not be overwritten with a false claim.
+        backends_used = sorted({
+            str(record.get("backend", "unknown")) for record in manifest_scenes
+        }) or ["unknown"]
         manifest: dict[str, Any] = {
-            "backend":  "local-ai",
+            "backend": backends_used[0] if len(backends_used) == 1 else "mixed",
+            "backends_used": backends_used,
             "source":   "chat",
             "run_id":   self._run_id,
             "total_images":    total_images,

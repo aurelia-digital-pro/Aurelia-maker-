@@ -56,7 +56,7 @@ def main() -> None:
     try:
         from aurelia.chat_entry import handle_chat_production
         from aurelia.factory_runner import FactoryRunner
-        from aurelia.media import validate_master
+        from aurelia.qc_engine import run_qc
 
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             raise RuntimeError("FFmpeg/ffprobe are required for real acceptance")
@@ -95,7 +95,23 @@ def main() -> None:
             raise RuntimeError("Legacy/test production content appeared in canonical execution logs")
 
         shutil.copy2(produced, final)
-        qc_result = validate_master(final, min_duration=30.0)
+        production_root = produced.parents[1]
+        manifest_path = production_root / "production_manifest.json"
+        required_artifacts = [
+            production_root / "visuals" / "visual_manifest.json",
+            production_root / "audio" / "narration.wav",
+            production_root / "audio" / "ambient_music.wav",
+            production_root / "audio" / "sound_design.wav",
+            production_root / f"episode-{episode_id}.srt",
+            production_root / "edit" / "edit_mixed.mp4",
+            production_root / "master" / "graded.mp4",
+        ]
+        qc_result = run_qc(
+            final,
+            srt_path=required_artifacts[4],
+            min_duration_s=30.0,
+            required_artifacts=required_artifacts,
+        )
         if not qc_result["passed"]:
             raise RuntimeError(f"QC rejected Episode {episode_id}: {qc_result}")
 
@@ -103,7 +119,6 @@ def main() -> None:
         duration = float(metadata["duration"])
         size = int(metadata["size"])
         sha = hashlib.sha256(final.read_bytes()).hexdigest()
-        production_root = produced.parents[1]
         manifest_path = production_root / "production_manifest.json"
         if not manifest_path.is_file():
             raise RuntimeError(f"Canonical Factory manifest missing: {manifest_path}")
@@ -135,6 +150,8 @@ def main() -> None:
             "canonical_path_verified": True,
             "legacy_produce_episode_used": False,
             "qc_checks": qc_result["checks"],
+            "qc_fatals": qc_result["fatals"],
+            "qc_warnings": qc_result["warnings"],
             "representative_frames": frame_evidence,
             "download_url": f"/api/jobs/{job.job_id}/video",
         }

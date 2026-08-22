@@ -64,6 +64,7 @@ def run_qc(
     min_fps: float = 18.0,
     expected_sha256: str | None = None,
     scene_count: int | None = None,
+    required_artifacts: list[Path | str] | None = None,
 ) -> dict[str, Any]:
     """Run full QC on the final delivery MP4.
 
@@ -153,6 +154,63 @@ def run_qc(
     checks.append(_check("encoding", codec_ok, "FATAL",
                          "" if codec_ok else f"Unexpected codec: {codec!r}"))
 
+    # Required downstream artifacts. These are hard failures because a final
+    # video without its declared production inputs is not auditable.
+    if required_artifacts:
+        for artifact in required_artifacts:
+            artifact_path = Path(artifact)
+            artifact_ok = artifact_path.is_file() and artifact_path.stat().st_size > 0
+            checks.append(_check(
+                "required_artifact",
+                artifact_ok,
+                "FATAL",
+                "" if artifact_ok else f"Missing required artifact: {artifact_path}",
+            ))
+
+    # Full-stream decodeability. A valid container/stream probe is not enough.
+    decode_ok = True
+    decode_msg = ""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        try:
+            decode = subprocess.run(
+                [ffmpeg, "-v", "error", "-i", str(video_path), "-map", "0:v:0", "-f", "null", "-"],
+                capture_output=True, timeout=180,
+            )
+            decode_ok = decode.returncode == 0
+            if not decode_ok:
+                decode_msg = decode.stderr.decode("utf-8", errors="replace")[-500:]
+        except Exception as exc:
+            decode_ok = False
+            decode_msg = str(exc)
+    else:
+        decode_ok = False
+        decode_msg = "ffmpeg is unavailable"
+    checks.append(_check("full_decode", decode_ok, "FATAL", "" if decode_ok else decode_msg))
+
+    # Sample the encoded video at multiple timestamps. This catches frozen or
+    # duplicated output that can still pass ordinary container checks.
+    sample_hashes: list[str] = []
+    variation_msg = ""
+    if ffmpeg and duration > 0:
+        for fraction in (0.2, 0.5, 0.8):
+            timestamp = max(0.0, min(duration - 0.05, duration * fraction))
+            try:
+                frame = subprocess.run(
+                    [ffmpeg, "-v", "error", "-ss", f"{timestamp:.3f}", "-i", str(video_path),
+                     "-frames:v", "1", "-f", "image2", "-c:v", "png", "pipe:1"],
+                    capture_output=True, timeout=60,
+                )
+                if frame.returncode == 0 and frame.stdout:
+                    sample_hashes.append(hashlib.sha256(frame.stdout).hexdigest())
+            except Exception:
+                pass
+    unique_samples = len(set(sample_hashes))
+    variation_ok = len(sample_hashes) >= 2 and unique_samples >= 2
+    if not variation_ok:
+        variation_msg = f"Only {unique_samples} unique encoded frames from {len(sample_hashes)} samples"
+    checks.append(_check("temporal_variation", variation_ok, "FATAL", "" if variation_ok else variation_msg))
+
     # delivery integrity
     if expected_sha256:
         actual_sha = hashlib.sha256(video_path.read_bytes()).hexdigest()
@@ -196,6 +254,19 @@ def run_qc(
             pass
     checks.append(_check("black_frames", black_ok, "WARNING",
                          "" if black_ok else black_msg))
+
+    # Audio/video duration relationship
+    av_duration_ok = True
+    av_duration_msg = ""
+    if audio_streams:
+        try:
+            audio_duration = float(audio_streams[0].get("duration") or 0)
+            if audio_duration > 0 and abs(audio_duration - duration) > 1.0:
+                av_duration_ok = False
+                av_duration_msg = f"Audio duration {audio_duration:.2f}s vs video {duration:.2f}s"
+        except Exception:
+            pass
+    checks.append(_check("av_duration", av_duration_ok, "WARNING", "" if av_duration_ok else av_duration_msg))
 
     # AV sync
     av_sync_ok = True

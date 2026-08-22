@@ -27,6 +27,7 @@ from .media import (
     burn_subtitles,
     concat_clips,
     generate_ambient_music,
+    generate_sound_design,
     master_encode,
     mix_narration_and_music,
     pad_video_to_duration,
@@ -484,7 +485,8 @@ class EpisodeProduction:
         return all_clips
 
     def assemble_edit(
-        self, clips: list[Path], narration_path: Path, music_path: Path | None
+        self, clips: list[Path], narration_path: Path, music_path: Path | None,
+        sound_design_path: Path | None = None,
     ) -> Path:
         self._emit("Editing — concatenating shots and mixing audio...")
         video_only = self.dirs["edit"] / "video_concat.mp4"
@@ -494,7 +496,9 @@ class EpisodeProduction:
         padded_video = self.dirs["edit"] / "video_padded.mp4"
         pad_video_to_duration(video_only, padded_video, target_duration)
         mixed = self.dirs["edit"] / "edit_mixed.mp4"
-        mix_narration_and_music(padded_video, narration_path, mixed, music_path)
+        mix_narration_and_music(
+            padded_video, narration_path, mixed, music_path, sound_design_path
+        )
         return mixed
 
     def finish(
@@ -603,8 +607,15 @@ class EpisodeProduction:
         )
         music_path = self.dirs["audio"] / "ambient_music.wav"
         generate_ambient_music(duration + 4.0, music_path)
+        sound_design_path = self.dirs["audio"] / "sound_design.wav"
+        scene_boundaries = []
+        cursor = 0.0
+        for scene in self.scenes[:-1]:
+            cursor += scene.duration
+            scene_boundaries.append(cursor)
+        generate_sound_design(duration, scene_boundaries, sound_design_path)
         clips  = self.render_shots(scene_assets)
-        edit   = self.assemble_edit(clips, narration, music_path)
+        edit   = self.assemble_edit(clips, narration, music_path, sound_design_path)
         outputs = self.finish(edit, srt, narration_path=narration)
         total_shots = sum(len(s.shots) for s in self.scenes)
         return {

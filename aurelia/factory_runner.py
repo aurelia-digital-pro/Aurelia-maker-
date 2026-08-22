@@ -279,6 +279,7 @@ class FactoryRunner:
         narration: Path | None = None
         subtitles: Path | None = None
         music: Path | None = None
+        sound_design: Path | None = None
         edit: Path | None = None
         final_outputs: dict[str, Path] = {}
 
@@ -430,12 +431,30 @@ class FactoryRunner:
                     "music_duration": total_dur + 4.0,
                     "music_path": str(music_path)}
 
+        def sound_processor(data: dict) -> dict:
+            nonlocal sound_design
+            if narration is None:
+                raise RuntimeError("SOUND requires NARRATION")
+            total_dur = _effective_planned_duration(production, narration)
+            boundaries = []
+            cursor = 0.0
+            for scene in production.scenes[:-1]:
+                cursor += scene.duration
+                boundaries.append(cursor)
+            sound_path = production.dirs["audio"] / "sound_design.wav"
+            from .media import generate_sound_design
+            generate_sound_design(total_dur, boundaries, sound_path)
+            sound_design = sound_path
+            return {**data, "stage": "SOUND",
+                    "sound_design_path": str(sound_path),
+                    "sound_design_boundaries": boundaries}
+
         def edit_processor(data: dict) -> dict:
             nonlocal edit
             if narration is None:
                 raise RuntimeError("EDIT requires NARRATION")
             clips = production.render_shots(_scene_assets)
-            edit = production.assemble_edit(clips, narration, music)
+            edit = production.assemble_edit(clips, narration, music, sound_design)
             return {**data, "stage": "EDIT",
                     "clip_count": len(clips),
                     "edit_path": str(edit)}
@@ -477,7 +496,8 @@ class FactoryRunner:
                 master_encode(subtitled, final_tiktok, profile="tiktok")
                 final_outputs["tiktok"] = final_tiktok
             return {**data, "stage": "MASTER",
-                    "master_path": str(final_youtube)}
+                    "master_path": str(final_youtube),
+                    "sound_design_path": str(sound_design) if sound_design else None}
 
         def qc_processor(data: dict) -> dict:
             from .qc_engine import run_qc
@@ -490,6 +510,16 @@ class FactoryRunner:
                 min_duration_s=max(5.0, planned_dur * 0.5),
                 planned_duration_s=planned_dur,
                 scene_count=len(production.scenes),
+                required_artifacts=[
+                    *sorted(stage_artifacts_root.glob("*.json")),
+                    production.visual_manifest_path,
+                    narration,
+                    music,
+                    sound_design,
+                    subtitles,
+                    production.dirs["edit"] / "edit_mixed.mp4",
+                    production.dirs["master"] / "graded.mp4",
+                ],
             )
             if qc["warnings"]:
                 for w in qc["warnings"]:
@@ -547,8 +577,9 @@ class FactoryRunner:
                 "source_script":     str(script_path),
                 "source_text_sha256": source_sha256,
                 "outputs":  {k: str(v) for k, v in final_outputs.items()},
+                "sound_design_path": str(sound_design) if sound_design else None,
                 "stage_artifacts": str(stage_artifacts_root),
-                "stage_artifact_count": len(list(stage_artifacts_root.glob("*.json"))),
+                "stage_artifact_count": len(PRODUCTION_STAGES),
                 "delivery_validation": delivered["validation"],
                 "directing":    [scene.direction for scene in production.scenes],
                 "environments": [s.direction.get("environment", "?") for s in production.scenes],
@@ -601,7 +632,7 @@ class FactoryRunner:
             "ATMOSPHERE":   _meta("ATMOSPHERE", "atmosphere"),
             "NARRATION":    narration_processor,
             "DIALOGUE":     _meta("DIALOGUE",  "dialogue"),
-            "SOUND":        _meta("SOUND",     "sound"),
+            "SOUND":        sound_processor,
             "MUSIC":        music_processor,
             "AUDIO":        _meta("AUDIO",     "audio"),
             "EDIT":         edit_processor,

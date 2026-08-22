@@ -83,3 +83,15 @@ The smoke test passed with two rendered shots, distinct motion intents, and a re
 ## Visual inspection notes
 
 Representative frames extracted from the final MP4 at approximately 4.5 seconds and 40.2 seconds both contained non-black, non-solid cinematic imagery with visible subject detail, controlled dark edges, warm/cool contrast, and readable subtitle burn-in. The two frames show different AI-generated compositions over time. This confirms actual pixel output and subtitle inclusion, but a still-frame inspection cannot prove motion quality by itself; the end-to-end renderer smoke test and encoded shot path provide the reproducible motion evidence.
+
+
+## Arabic final-frame inspection
+
+The Arabic Episode 0001 run produced five representative frames across the duration. Early and late frames inspected from the encoded delivery showed real AI-generated subject imagery, visible dark-edge treatment and warm/cool grading, materially different compositions between scenes, and readable Arabic subtitle burn-in. The inspection confirms non-empty rendered pixels and subtitle inclusion; it does not replace motion metrics or full decode checks.
+
+
+## Sound design and strengthened QC repair
+
+The active FACTORY SOUND stage now creates `audio/sound_design.wav` with deterministic scene-boundary riser/noise cues using the Python standard library WAV writer. The active EDIT stage consumes this artifact alongside narration and music through FFmpeg `amix`; the production manifest records its path. The Episode 0001 verification produced a 48 kHz stereo PCM sound-design artifact of 107.48 seconds and a final AAC mix.
+
+QC now adds hard full-stream FFmpeg decode validation, encoded-frame temporal variation sampling, audio/video duration relationship reporting, and required-artifact existence checks. Episode 0001 completed with `qc_passed=true`, zero fatal failures, zero warnings, and a 31-file stage-artifact directory. The acceptance harness still reports its legacy summary checks separately; the canonical Factory QC is the stronger gate.

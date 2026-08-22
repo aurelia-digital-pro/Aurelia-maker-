@@ -139,34 +139,80 @@ def pad_video_to_duration(source: str | Path, output: str | Path, duration: floa
     return output_path
 
 
+def generate_sound_design(
+    duration_sec: float,
+    scene_boundaries: list[float] | None,
+    output: str | Path,
+) -> Path:
+    """Generate an authored, non-silent sound-design cue track.
+
+    The cues are tied to scene boundaries: a low cinematic riser plus a short
+    filtered noise swell. This is intentionally separate from the music bed so
+    the EDIT mix can prove that SOUND DESIGN is a consumed audio artifact.
+    """
+    import math
+    import struct
+    import wave
+
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    sample_rate = 48000
+    total_frames = int(max(duration_sec, 5.0) * sample_rate)
+    starts = [max(0.0, min(duration_sec - 0.9, float(boundary)))
+              for boundary in sorted(scene_boundaries or [])]
+    with wave.open(str(output_path), "wb") as wav:
+        wav.setnchannels(2)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        for frame_index in range(total_frames):
+            now = frame_index / sample_rate
+            value = 0.0
+            for start in starts:
+                rel = now - start
+                if 0.0 <= rel < 0.9:
+                    envelope = min(1.0, rel / 0.16) * max(0.0, (0.9 - rel) / 0.70)
+                    rumble = math.sin(2.0 * math.pi * 92.0 * rel) * 0.028 * envelope
+                    deterministic_noise = math.sin(2.0 * math.pi * 1733.0 * rel) * 0.004 * envelope
+                    value += rumble + deterministic_noise
+            pcm = max(-1.0, min(1.0, value))
+            sample = int(pcm * 32767)
+            wav.writeframes(struct.pack("<hh", sample, sample))
+    return _require_file(output_path, "Sound-design track")
+
+
 def mix_narration_and_music(
     video: str | Path, narration: str | Path, output: str | Path,
-    music: str | Path | None = None
+    music: str | Path | None = None,
+    sound_design: str | Path | None = None,
 ) -> Path:
     video = _require_file(video, "Video")
     narration = _require_file(narration, "Narration")
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     target_duration = max(30.0, probe_duration(video), probe_duration(narration))
+    inputs = [video, narration]
+    filters = [f"[1:a]apad=whole_dur={target_duration:.6f},volume=1.0[narr]"]
+    mix_inputs = ["[narr]"]
     if music is not None and Path(music).is_file() and Path(music).stat().st_size > 0:
-        _run(["-y", "-hide_banner", "-loglevel", "error",
-              "-i", str(video), "-i", str(narration), "-i", str(music),
-              "-filter_complex",
-              f"[1:a]apad=whole_dur={target_duration:.6f},volume=1.0[narr];"
-              f"[2:a]volume=0.15[bgm];"
-              f"[narr][bgm]amix=inputs=2:duration=longest:dropout_transition=2,"
-              f"atrim=duration={target_duration:.6f}[aout]",
-              "-map", "0:v:0", "-map", "[aout]",
-              "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-              "-t", f"{target_duration:.6f}", str(output_path)], output_path)
-    else:
-        _run(["-y", "-hide_banner", "-loglevel", "error",
-              "-i", str(video), "-i", str(narration),
-              "-filter_complex",
-              f"[1:a]apad=whole_dur={target_duration:.6f}[aout]",
-              "-map", "0:v:0", "-map", "[aout]",
-              "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-              "-t", f"{target_duration:.6f}", str(output_path)], output_path)
+        inputs.append(Path(music))
+        filters.append("[2:a]volume=0.15[bgm]")
+        mix_inputs.append("[bgm]")
+    if sound_design is not None and Path(sound_design).is_file() and Path(sound_design).stat().st_size > 0:
+        inputs.append(Path(sound_design))
+        sound_index = len(inputs) - 1
+        filters.append(f"[{sound_index}:a]volume=0.65[sfx]")
+        mix_inputs.append("[sfx]")
+    filters.append(
+        "".join(mix_inputs) + f"amix=inputs={len(mix_inputs)}:duration=longest:"
+        f"dropout_transition=2,atrim=duration={target_duration:.6f}[aout]"
+    )
+    args = ["-y", "-hide_banner", "-loglevel", "error"]
+    for input_path in inputs:
+        args += ["-i", str(input_path)]
+    args += ["-filter_complex", ";".join(filters), "-map", "0:v:0", "-map", "[aout]",
+             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+             "-t", f"{target_duration:.6f}", str(output_path)]
+    _run(args, output_path)
     return output_path
 
 

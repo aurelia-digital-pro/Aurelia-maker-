@@ -40,6 +40,30 @@ class ProductionJob:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+def _effective_planned_duration(production: "EpisodeProduction", narration: Path | None) -> float:
+    """Reconcile the pre-production scene-duration estimate with the real
+    narration length once it is known.
+
+    Scene durations are estimated during PRE_PRODUCTION, before the actual
+    TTS narration exists, so they can be far shorter than the real spoken
+    content (e.g. a 41s estimate vs. 107.5s of real Arabic narration). Every
+    QC/delivery check that compares the final video's duration against a
+    "planned" duration must use this reconciled value — never the raw
+    scene-plan estimate alone — or it will keep reporting a large, false
+    "duration mismatch" warning against a final video that is actually
+    correct (its length legitimately follows the real narration).
+    """
+    planned_dur = max(5.0, sum(s.duration for s in production.scenes))
+    narration_dur = 0.0
+    if narration is not None:
+        try:
+            from .media import probe_duration as _pd
+            narration_dur = _pd(narration)
+        except Exception:
+            pass
+    return max(planned_dur, narration_dur)
+
+
 class FactoryRunner:
     def __init__(self, root: str | Path):
         self.root = Path(root)
@@ -395,15 +419,7 @@ class FactoryRunner:
 
         def music_processor(data: dict) -> dict:
             nonlocal music
-            planned_dur = max(5.0, sum(s.duration for s in production.scenes))
-            narration_dur = 0.0
-            if narration is not None:
-                try:
-                    from .media import probe_duration as _pd
-                    narration_dur = _pd(narration)
-                except Exception:
-                    pass
-            total_dur = max(planned_dur, narration_dur)
+            total_dur = _effective_planned_duration(production, narration)
             music_path = production.dirs["audio"] / "ambient_music.wav"
             from .media import generate_ambient_music
             generate_ambient_music(total_dur + 4.0, music_path)
@@ -465,7 +481,7 @@ class FactoryRunner:
             from .qc_engine import run_qc
             if "youtube" not in final_outputs:
                 raise RuntimeError("QC requires MASTER")
-            planned_dur = max(5.0, sum(s.duration for s in production.scenes))
+            planned_dur = _effective_planned_duration(production, narration)
             qc = run_qc(
                 video_path=final_outputs["youtube"],
                 srt_path=subtitles,
@@ -490,7 +506,7 @@ class FactoryRunner:
             final = final_outputs.get("youtube")
             if final is None:
                 raise RuntimeError("DELIVERY requires master artifact")
-            planned_dur = max(5.0, sum(s.duration for s in production.scenes))
+            planned_dur = _effective_planned_duration(production, narration)
             min_dur = max(5.0, planned_dur * 0.5)
             validation = validate_master(final, min_duration=min_dur)
             # Use total asset count (shots), not scene count for validate_visual_manifest
@@ -605,7 +621,7 @@ class FactoryRunner:
         if "final" not in final_outputs:
             raise RuntimeError("Canonical production completed without FINAL MP4")
 
-        planned_dur = max(5.0, sum(s.duration for s in production.scenes))
+        planned_dur = _effective_planned_duration(production, narration)
         min_dur = max(5.0, planned_dur * 0.5)
         final_validation = validate_master(final_outputs["final"], min_duration=min_dur)
         total_assets = production._total_visual_assets or None

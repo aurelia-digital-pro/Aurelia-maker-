@@ -480,7 +480,9 @@ class EpisodeProduction:
         mix_narration_and_music(padded_video, narration_path, mixed, music_path)
         return mixed
 
-    def finish(self, edit_path: Path, srt_path: Path) -> dict[str, Path]:
+    def finish(
+        self, edit_path: Path, srt_path: Path, narration_path: Path | None = None,
+    ) -> dict[str, Path]:
         """Grade → subtitle → master encode → QC → delivery alias."""
         from .qc_engine import run_qc
 
@@ -506,7 +508,18 @@ class EpisodeProduction:
         final_alias.write_bytes(final_youtube.read_bytes())
         outputs["final"] = final_alias
 
+        # Reconcile the pre-production scene-duration estimate with the real
+        # narration length once it is known — the scene plan is only an
+        # early estimate made before TTS runs, so it can be far shorter than
+        # the actual spoken content. Comparing final duration against the
+        # raw estimate alone produces a false "duration mismatch" against a
+        # video whose length is actually correct.
         planned_dur = max(5.0, sum(s.duration for s in self.scenes))
+        if narration_path is not None:
+            try:
+                planned_dur = max(planned_dur, probe_duration(narration_path))
+            except Exception:
+                pass
         qc = run_qc(
             video_path=final_alias, srt_path=srt_path,
             min_duration_s=max(5.0, planned_dur * 0.5),
@@ -575,7 +588,7 @@ class EpisodeProduction:
         generate_ambient_music(duration + 4.0, music_path)
         clips  = self.render_shots(scene_assets)
         edit   = self.assemble_edit(clips, narration, music_path)
-        outputs = self.finish(edit, srt)
+        outputs = self.finish(edit, srt, narration_path=narration)
         total_shots = sum(len(s.shots) for s in self.scenes)
         return {
             "episode_id":  self.episode_id,

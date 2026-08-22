@@ -476,7 +476,30 @@ def validate_visual_manifest(
             asset_names = " ".join(
                 str(scene.get("asset", "")).lower() for scene in scenes
             )
-            scene_text = json.dumps(manifest, ensure_ascii=False).lower()
+            # Generation prompts legitimately contain words like "watermark" and
+            # "logo" as NEGATIVE/avoidance instructions to the image model
+            # (see ai_visual.py's negative prompt and build_scene_prompt output).
+            # Scanning the raw manifest JSON for those substrings therefore
+            # false-flags every real generation, since the prompt text itself
+            # is stored in each scene record for provenance. Redact prompt-like
+            # fields before scanning for actual contamination markers so this
+            # check reflects real artifacts (e.g. a backend or filename that
+            # actually indicates a watermark/logo/template asset) rather than
+            # the anti-watermark instruction we asked the model to follow.
+            _PROMPT_FIELDS = {"prompt", "negative_prompt"}
+
+            def _redact(node: object) -> object:
+                if isinstance(node, dict):
+                    return {
+                        key: _redact(value)
+                        for key, value in node.items()
+                        if key not in _PROMPT_FIELDS
+                    }
+                if isinstance(node, list):
+                    return [_redact(item) for item in node]
+                return node
+
+            scene_text = json.dumps(_redact(manifest), ensure_ascii=False).lower()
             # Narrowed forbidden tokens — avoid false positives on scene text
             forbidden_asset = ("asset_generator", "title_card", "star-field", "star_field")
             forbidden_meta = ("watermark", "logo", "ui")

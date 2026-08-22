@@ -102,3 +102,10 @@ QC now adds hard full-stream FFmpeg decode validation, encoded-frame temporal va
 The scene-boundary transition policy now combines the SceneAnalyzer transition hint with narrative beat, scene purpose, emotional register, and environment change. Hard cuts remain the default within scenes; at a semantic boundary, a climax with a world/environment change selects a motivated light transition, while resolution/conclusion and calm/wonder boundaries can select fade or dissolve. The canonical Arabic run for job `973e5b0ad1c14fe695a4efcc201d8784` reported `Applied 1 cinematic transitions across 6 shots`, proving that a non-cut transition reached the actual assembler rather than remaining only in metadata.
 
 The resulting FINAL MP4 was accepted with duration `107.508s`, size `20,875,289` bytes, H.264 video at 1920x1080/24fps, AAC audio, and zero QC fatals or warnings. Representative beginning and ending frames were inspected: both contained non-blank generated imagery with changed framing/lighting and burned Arabic subtitles. The limitation remains that local Stable Diffusion is unavailable; Cloud/Pollinations supplied all six visual assets with zero Pillow fallbacks.
+
+
+## Stereo final-mix correction
+
+A direct ffprobe of the transition-enabled run exposed that the encoded AAC output was mono even though the authored sound-design source was stereo/48 kHz. The active mixer was corrected to apply `aformat=sample_rates=48000:channel_layouts=stereo` after `amix`, and the canonical Arabic E2E was rerun.
+
+The corrected run is job `3367160fb27a4c7fac20771d444b08e0`. It applied one motivated cinematic transition across six shots, produced a valid accepted FINAL MP4, and passed all fatal and warning QC checks. Direct ffprobe now reports H.264 video at 1920x1080/24 fps and AAC audio at 48 kHz with two channels, with duration `107.520s` and size `21,520,905` bytes. The authored sound-design WAV is PCM stereo/48 kHz with duration `107.481813s` and is consumed by the active mixer.

@@ -204,7 +204,9 @@ def mix_narration_and_music(
         mix_inputs.append("[sfx]")
     filters.append(
         "".join(mix_inputs) + f"amix=inputs={len(mix_inputs)}:duration=longest:"
-        f"dropout_transition=2,atrim=duration={target_duration:.6f}[aout]"
+        f"dropout_transition=2,"
+        "aformat=sample_rates=48000:channel_layouts=stereo,"
+        f"atrim=duration={target_duration:.6f}[aout]"
     )
     args = ["-y", "-hide_banner", "-loglevel", "error"]
     for input_path in inputs:

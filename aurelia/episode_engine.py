@@ -470,9 +470,28 @@ class EpisodeProduction:
                     },
                 )
                 if all_clips:
-                    boundary_transitions.append(
-                        str(shot_dict.get("transition_in") or "cut")
-                    )
+                    transition = str(shot_dict.get("transition_in") or "cut").strip().lower()
+                    # SceneAnalyzer is authoritative for semantic boundaries. If
+                    # its hint is a cut, preserve hard cuts inside a scene but
+                    # allow a motivated scene-level xfade when the narrative
+                    # context calls for a reveal, resolution, or a climax with
+                    # a world/environment change.
+                    if i == 0 and scene.index > 0:
+                        analysis = scene.analysis or {}
+                        previous = self.scenes[scene.index - 1]
+                        previous_env = (previous.direction or {}).get("environment")
+                        current_env = direction.get("environment")
+                        beat = str(analysis.get("narrative_beat", ""))
+                        purpose = str(analysis.get("scene_purpose", ""))
+                        emotion = str(analysis.get("emotional_register", ""))
+                        if transition in {"cut", "none", ""}:
+                            if beat == "climax" and previous_env != current_env:
+                                transition = "light"
+                            elif purpose == "conclude" or beat in {"resolution", "transition"}:
+                                transition = "fade"
+                            elif emotion in {"calm", "melancholic", "wonder"}:
+                                transition = "dissolve"
+                    boundary_transitions.append(transition)
                 all_clips.append(out)
 
         if not all_clips:

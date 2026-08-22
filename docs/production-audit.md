@@ -95,3 +95,10 @@ The Arabic Episode 0001 run produced five representative frames across the durat
 The active FACTORY SOUND stage now creates `audio/sound_design.wav` with deterministic scene-boundary riser/noise cues using the Python standard library WAV writer. The active EDIT stage consumes this artifact alongside narration and music through FFmpeg `amix`; the production manifest records its path. The Episode 0001 verification produced a 48 kHz stereo PCM sound-design artifact of 107.48 seconds and a final AAC mix.
 
 QC now adds hard full-stream FFmpeg decode validation, encoded-frame temporal variation sampling, audio/video duration relationship reporting, and required-artifact existence checks. Episode 0001 completed with `qc_passed=true`, zero fatal failures, zero warnings, and a 31-file stage-artifact directory. The acceptance harness still reports its legacy summary checks separately; the canonical Factory QC is the stronger gate.
+
+
+## Next-stage transition improvement
+
+The scene-boundary transition policy now combines the SceneAnalyzer transition hint with narrative beat, scene purpose, emotional register, and environment change. Hard cuts remain the default within scenes; at a semantic boundary, a climax with a world/environment change selects a motivated light transition, while resolution/conclusion and calm/wonder boundaries can select fade or dissolve. The canonical Arabic run for job `973e5b0ad1c14fe695a4efcc201d8784` reported `Applied 1 cinematic transitions across 6 shots`, proving that a non-cut transition reached the actual assembler rather than remaining only in metadata.
+
+The resulting FINAL MP4 was accepted with duration `107.508s`, size `20,875,289` bytes, H.264 video at 1920x1080/24fps, AAC audio, and zero QC fatals or warnings. Representative beginning and ending frames were inspected: both contained non-blank generated imagery with changed framing/lighting and burned Arabic subtitles. The limitation remains that local Stable Diffusion is unavailable; Cloud/Pollinations supplied all six visual assets with zero Pillow fallbacks.

@@ -410,5 +410,11 @@ jobs:
             runs/e2e/proof_frames/*.png
             runs/e2e/output/**/production_manifest.json
             runs/e2e/output/**/visuals/visual_manifest.json
+            runs/e2e/output/**/shots/*.mp4
+            runs/e2e/output/**/edit/*.mp4
+            runs/e2e/output/**/master/*.mp4
+            runs/e2e/output/**/delivery/*.mp4
+            runs/e2e/output/**/audio/*.wav
+            runs/e2e/output/**/factory/stage_artifacts/*.json
             PRODUCTION_PROOF.md
           retention-days: 30

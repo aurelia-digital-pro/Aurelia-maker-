@@ -102,10 +102,11 @@ class CinematicVisualEngine:
         # movement so the encoded stream never becomes a cloned still frame.
         zoom_start = max(1.0, zoom_start)
         zoom_end   = max(1.0, zoom_end)
-        if abs(zoom_end - zoom_start) < 0.10:
+        if abs(zoom_end - zoom_start) < 0.22:
             # Keep calm/static direction but guarantee enough real camera
-            # travel for strict freezedetect and 10-second variation gates.
-            zoom_end = zoom_start + (0.10 if zoom_end >= zoom_start else -0.10)
+            # travel for strict freezedetect and 10-second variation gates,
+            # including low-texture Pillow fallback frames.
+            zoom_end = zoom_start + (0.22 if zoom_end >= zoom_start else -0.22)
 
         frames      = max(1, round(duration * self.fps))
         denominator = max(frames - 1, 1)

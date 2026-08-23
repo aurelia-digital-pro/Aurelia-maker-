@@ -6,12 +6,12 @@ on:
       episode_id:
         description: "4-digit episode ID (e.g. 0001)"
         required: false
-        default: "0001"
+        default: "0089"
         type: string
       script_path:
-        description: "Path to script file (default: scripts/episode-0001-arabic-test.txt)"
+        description: "Path to script file (default: scripts/episode-0089-acceptance.txt)"
         required: false
-        default: "scripts/episode-0001-arabic-test.txt"
+        default: "scripts/episode-0089-acceptance.txt"
         type: string
       language:
         description: "Language (ar or en)"
@@ -22,6 +22,8 @@ on:
     branches: [main]
     paths:
       - "aurelia/**.py"
+      - "scripts/**"
+      - ".github/workflows/**"
       - "requirements.txt"
 
 permissions:

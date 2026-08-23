@@ -309,7 +309,7 @@ class CinematicVisualEngine:
         # QC bypass: it preserves composition while ensuring low-texture or
         # nearly uniform provider plates retain real per-frame signal.
         grain = min(max(float(vfx.get("grain", 0.0) or 0.0), 0.0), 0.15)
-        grain = max(grain, 0.10)
+        grain = max(grain, 0.02)
         filters.append(f"noise=alls={grain * 100.0:.3f}:allf=t+u")
 
         bloom = min(max(float(vfx.get("bloom", 0.0) or 0.0), 0.0), 0.35)

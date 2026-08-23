@@ -230,7 +230,9 @@ def generate_visual(
         _log(f"[VISUAL] Scene {scene_index+1}: SD unavailable — {fallback_reason}")
 
     # ── 2. Cloud API (Pollinations.ai FLUX free → Together → Replicate → FAL) ─
-    if backend_used != "stable-diffusion":
+    # An explicit fallback flag is used by deterministic CI and must not make
+    # any network request. Local/interactive runs retain the normal cloud chain.
+    if backend_used != "stable-diffusion" and os.environ.get("AURELIA_FORCE_FALLBACK") != "1":
         from .visual_api import generate_via_api
         _log(f"[VISUAL] Scene {scene_index+1}: trying cloud API...")
         api_ok, api_backend = generate_via_api(
@@ -250,6 +252,8 @@ def generate_visual(
                 f"[VISUAL][FALLBACK] Scene {scene_index+1}: cloud API failed — "
                 f"{fallback_reason}"
             )
+    elif backend_used != "stable-diffusion":
+        _log(f"[VISUAL] Scene {scene_index+1}: cloud API skipped by AURELIA_FORCE_FALLBACK=1")
 
     # ── 3. Pillow procedural (guaranteed fallback) ────────────────────────
     if not backend_used.startswith(("stable-diffusion", "cloud-api")):

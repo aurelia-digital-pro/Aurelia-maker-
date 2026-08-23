@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -230,6 +231,42 @@ def run_qc(
         srt_ok = srt_path.is_file() and srt_path.stat().st_size > 10
         checks.append(_check("subtitle_file", srt_ok, "WARNING",
                              "" if srt_ok else f"SRT not found or empty: {srt_path}"))
+
+        # Subtitle completeness is a delivery requirement: cues must be
+        # parseable, cover the beginning and end of the final video, and have
+        # positive durations with non-empty text. The producer preserves the
+        # full narration text by splitting long scene text into cues.
+        subtitle_complete = False
+        subtitle_message = "Subtitle track unavailable"
+        if srt_ok:
+            try:
+                raw = srt_path.read_text(encoding="utf-8-sig")
+                cues = []
+                blocks = re.split(r"\n\s*\n", raw.replace("\r\n", "\n").strip())
+                for block in blocks:
+                    lines = [line.strip() for line in block.split("\n") if line.strip()]
+                    timing = next((line for line in lines if "-->" in line), "")
+                    text_lines = [line for line in lines if "-->" not in line and not line.isdigit()]
+                    if not timing or not text_lines:
+                        continue
+                    start_text, end_text = [part.strip() for part in timing.split("-->", 1)]
+                    def parse_time(value: str) -> float:
+                        hh, mm, rest = value.replace(",", ".").split(":")
+                        return int(hh) * 3600 + int(mm) * 60 + float(rest)
+                    start = parse_time(start_text)
+                    end = parse_time(end_text)
+                    cues.append((start, end, " ".join(text_lines)))
+                first_start = cues[0][0] if cues else duration
+                last_end = cues[-1][1] if cues else 0.0
+                malformed = any(end <= start or not text for start, end, text in cues)
+                subtitle_complete = bool(cues) and first_start <= 0.5 and last_end >= max(0.0, duration - 1.0) and not malformed
+                if not subtitle_complete:
+                    subtitle_message = f"cues={len(cues)}, coverage={first_start:.2f}s..{last_end:.2f}s for video {duration:.2f}s"
+                else:
+                    subtitle_message = ""
+            except (OSError, ValueError, UnicodeError) as exc:
+                subtitle_message = f"Subtitle parse failed: {exc}"
+        checks.append(_check("subtitle_completeness", subtitle_complete, "FATAL", subtitle_message))
 
     # black frames (uses blackdetect filter)
     black_ok = True

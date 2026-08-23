@@ -389,11 +389,41 @@ class EpisodeProduction:
         cursor = 0.0
         for scene in self.scenes:
             end = cursor + per_scene
-            snippet = re.sub(r"\s+", " ", scene.text.strip())
-            if len(snippet) > 160:
-                snippet = snippet[:157] + "..."
-            lines.extend([str(cue_index), f"{fmt(cursor)} --> {fmt(end)}", snippet, ""])
-            cue_index += 1
+            full_text = re.sub(r"\s+", " ", scene.text.strip())
+            if not full_text:
+                cursor = end
+                continue
+
+            # Preserve every narrated word. Long scene text is split into
+            # readable timed cues instead of being truncated with an ellipsis.
+            words = full_text.split()
+            chunks: list[str] = []
+            current: list[str] = []
+            for word in words:
+                candidate = " ".join([*current, word])
+                if current and len(candidate) > 120:
+                    chunks.append(" ".join(current))
+                    current = [word]
+                else:
+                    current.append(word)
+            if current:
+                chunks.append(" ".join(current))
+
+            total_chars = max(sum(len(chunk) for chunk in chunks), 1)
+            cue_cursor = cursor
+            for chunk_index, chunk in enumerate(chunks):
+                if chunk_index == len(chunks) - 1:
+                    cue_end = end
+                else:
+                    cue_end = cue_cursor + per_scene * len(chunk) / total_chars
+                lines.extend([
+                    str(cue_index),
+                    f"{fmt(cue_cursor)} --> {fmt(cue_end)}",
+                    chunk,
+                    "",
+                ])
+                cue_index += 1
+                cue_cursor = cue_end
             cursor = end
 
         srt_path = self.root / f"episode-{self.episode_id}.srt"

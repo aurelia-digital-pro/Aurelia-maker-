@@ -303,9 +303,8 @@ def burn_subtitles(source: str | Path, srt: str | Path, output: str | Path) -> P
                          "-c:v", "libx264", "-preset", "medium", "-crf", "17",
                          "-c:a", "copy", "-pix_fmt", "yuv420p", str(output_path)])
     if result.returncode != 0:
-        # Fallback: copy without subtitles rather than fail entire pipeline
-        import shutil
-        shutil.copy2(source, output_path)
+        stderr = result.stderr.decode("utf-8", errors="replace")[-500:]
+        raise RuntimeError(f"Subtitle burn-in failed; refusing unsubtitled delivery: {stderr}")
     _require_file(output_path, "Subtitle output")
     return output_path
 

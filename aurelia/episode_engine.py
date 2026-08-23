@@ -49,7 +49,10 @@ from .shot_designer import ShotDesigner, ShotSpec
 from .shot_timer import allocate as allocate_shot_durations
 from .transitions import select_transition
 from .tts import synthesize_script
-from .visual_backend import generate_visual  # PRIMARY: SD → Cloud API → Pillow
+from .visual_backend import (
+    assert_production_visual_provider,
+    generate_visual,
+)  # PRIMARY: SD → Cloud API → Pillow
 from .visual_checkpoint import VisualCheckpoint
 
 LogFn = Callable[[str], None]
@@ -223,6 +226,9 @@ class EpisodeProduction:
         Checkpoint/resume: already-generated shots are loaded from disk,
         not regenerated. Safe to restart interrupted long-episode productions.
         """
+        provider = assert_production_visual_provider(logger=self._emit)
+        if provider != "development":
+            self._emit(f"[PRODUCTION] Real visual provider preflight passed: {provider}")
         self._emit("Generating visual assets — SD → Cloud API → Pillow per shot...")
         scene_assets: dict[str, list[Path]] = {}
         manifest_scenes: list[dict[str, Any]] = []
@@ -644,7 +650,23 @@ class EpisodeProduction:
         self, edit_path: Path, srt_path: Path, narration_path: Path | None = None,
     ) -> dict[str, Path]:
         """Grade → subtitle → master encode → QC → delivery alias."""
-        from .qc_engine import run_qc
+        from .qc_engine import run_qc, visual_variation_preflight
+
+        preflight = visual_variation_preflight(edit_path, threshold=0.005)
+        self._emit(
+            f"[PREFLIGHT] stage=EDIT path={edit_path} "
+            f"minimum_diff={preflight.get('minimum_diff', 0.0):.4f} "
+            f"threshold={preflight.get('threshold', 0.005):.3f} "
+            f"passed={preflight.get('passed', False)}"
+        )
+        if not preflight.get("passed", False):
+            raise RuntimeError(
+                "PREFLIGHT FATAL: stage=EDIT "
+                f"minimum_diff={preflight.get('minimum_diff', 0.0):.4f} "
+                "threshold=0.005 "
+                f"video_path={edit_path} "
+                "likely insufficient real scene motion or provider variation"
+            )
 
         self._emit("Color grading...")
         graded = self.dirs["master"] / "graded.mp4"

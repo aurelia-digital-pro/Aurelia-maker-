@@ -304,12 +304,11 @@ class CinematicVisualEngine:
         if vignette > 0:
             filters.append(f"vignette=angle=PI/{max(2.0, 5.0 - vignette * 2.0):.3f}")
 
-        # A restrained temporal grain layer is always encoded. It is a
-        # genuine film-finish operation and supplies per-frame signal for
-        # otherwise low-texture fallback plates without changing composition.
+        # Grain is applied only when the directing/VFX plan explicitly asks
+        # for it; it is never injected as a QC workaround.
         grain = min(max(float(vfx.get("grain", 0.0) or 0.0), 0.0), 0.15)
-        grain = max(grain, 0.10)
-        filters.append(f"noise=alls={grain * 100.0:.3f}:allf=t+u")
+        if grain > 0:
+            filters.append(f"noise=alls={grain * 100.0:.3f}:allf=t+u")
 
         bloom = min(max(float(vfx.get("bloom", 0.0) or 0.0), 0.0), 0.35)
         if bloom > 0:

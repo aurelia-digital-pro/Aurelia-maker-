@@ -55,6 +55,59 @@ def _check(name: str, passed: bool, severity: str, message: str) -> dict[str, An
     return {"name": name, "passed": passed, "severity": severity, "message": message}
 
 
+def visual_variation_preflight(video_path: Path | str, threshold: float = 0.005) -> dict[str, Any]:
+    """Measure 10-second decoded frame differences before mastering.
+
+    This is intentionally the same principle and threshold used by final QC;
+    it is an early diagnostic gate, not a replacement for run_qc().
+    """
+    path = Path(video_path)
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg or not path.is_file():
+        return {
+            "passed": False,
+            "minimum_diff": 0.0,
+            "threshold": threshold,
+            "video_path": str(path),
+            "message": "ffmpeg unavailable or video path missing",
+        }
+    frames: list[bytes] = []
+    try:
+        duration_probe = _ffprobe(path).get("format", {}).get("duration", 0.0)
+        duration = float(duration_probe or 0.0)
+    except Exception:
+        duration = 0.0
+    for timestamp in range(0, int(duration), 10):
+        try:
+            sample = subprocess.run(
+                [ffmpeg, "-v", "error", "-ss", str(timestamp), "-i", str(path),
+                 "-frames:v", "1", "-vf", "scale=64:36,format=gray",
+                 "-f", "rawvideo", "pipe:1"],
+                capture_output=True, timeout=30,
+            )
+            if sample.returncode == 0 and sample.stdout:
+                frames.append(sample.stdout)
+        except Exception:
+            pass
+    diffs: list[float] = []
+    for first, second in zip(frames, frames[1:]):
+        size = min(len(first), len(second))
+        if size:
+            diffs.append(sum(abs(first[i] - second[i]) for i in range(size)) / (size * 255.0))
+    minimum = min(diffs) if diffs else 0.0
+    passed = bool(diffs) and minimum >= threshold
+    return {
+        "passed": passed,
+        "minimum_diff": minimum,
+        "threshold": threshold,
+        "video_path": str(path),
+        "message": "" if passed else (
+            f"minimum 10s sample diff {minimum:.4f} < {threshold:.3f}; "
+            "likely insufficient real scene motion or provider variation"
+        ),
+    }
+
+
 def run_qc(
     video_path: Path | str,
     srt_path: Path | str | None = None,
@@ -239,29 +292,13 @@ def run_qc(
     # Stronger 10-second-window visual variation gate. Frames are decoded at a
     # small analysis size, then adjacent mean absolute pixel differences are
     # measured; this checks motion rather than merely distinct timestamps.
-    visual_variation_ok = True
-    visual_variation_msg = ""
-    if ffmpeg and duration >= 10.0:
-        frames: list[bytes] = []
-        for timestamp in range(0, int(duration), 10):
-            try:
-                sample = subprocess.run(
-                    [ffmpeg, "-v", "error", "-ss", str(timestamp), "-i", str(video_path), "-frames:v", "1", "-vf", "scale=64:36,format=gray", "-f", "rawvideo", "pipe:1"],
-                    capture_output=True, timeout=30,
-                )
-                if sample.returncode == 0 and sample.stdout:
-                    frames.append(sample.stdout)
-            except Exception:
-                pass
-        diffs: list[float] = []
-        for first, second in zip(frames, frames[1:]):
-            size = min(len(first), len(second))
-            if size:
-                diffs.append(sum(abs(first[i] - second[i]) for i in range(size)) / (size * 255.0))
-        visual_variation_ok = bool(diffs) and min(diffs) >= 0.005
-        if not visual_variation_ok:
-            visual_variation_msg = f"minimum 10s sample diff {min(diffs) if diffs else 0.0:.4f} < 0.005"
-    checks.append(_check("visual_variation", visual_variation_ok, "FATAL", "" if visual_variation_ok else visual_variation_msg))
+    variation = visual_variation_preflight(video_path, threshold=0.005)
+    checks.append(_check(
+        "visual_variation",
+        bool(variation["passed"]),
+        "FATAL",
+        str(variation.get("message", "")),
+    ))
 
     # delivery integrity
     if expected_sha256:
@@ -438,4 +475,4 @@ def _build_result(
     }
 
 
-__all__ = ["run_qc"]
+__all__ = ["run_qc", "visual_variation_preflight"]

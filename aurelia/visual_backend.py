@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -159,6 +160,63 @@ def _generate_pillow(
 
 # ── public entrypoint ─────────────────────────────────────────────────────────
 
+def production_mode_enabled() -> bool:
+    return os.environ.get("AURELIA_PRODUCTION_MODE", "0").strip() == "1"
+
+
+def _force_fallback_enabled() -> bool:
+    return os.environ.get("AURELIA_FORCE_FALLBACK", "0").strip() == "1"
+
+
+def assert_production_visual_provider(logger: Any | None = None) -> str:
+    """Fail fast unless a real, configured visual provider can create an image.
+
+    The preflight performs one actual provider request and validates the image
+    bytes. Pillow is intentionally never considered a production provider.
+    """
+    if not production_mode_enabled():
+        return "development"
+    if _force_fallback_enabled():
+        raise RuntimeError(
+            "FATAL: AURELIA_FORCE_FALLBACK=1 cannot be used with "
+            "AURELIA_PRODUCTION_MODE=1. Production Acceptance requires a real visual provider."
+        )
+    forced = os.environ.get("AURELIA_VISUAL_BACKEND", "").strip().lower()
+    if forced == "pillow":
+        raise RuntimeError(
+            "PRODUCTION ACCEPTANCE REQUIRES REAL VISUAL PROVIDER. "
+            "Pillow is not a production visual provider."
+        )
+    probe = probe_sd_backend()
+    if probe.get("available") and not forced:
+        return "stable-diffusion"
+    with tempfile.TemporaryDirectory(prefix="aurelia-provider-preflight-") as tmp:
+        output = Path(tmp) / "provider-preflight.png"
+        from .visual_api import generate_via_api
+        ok, backend = generate_via_api(
+            prompt=("cinematic production provider preflight, a mountain relay "
+                    "station at blue hour, photorealistic film still"),
+            seed=1731,
+            width=256,
+            height=256,
+            output_path=output,
+            logger=logger,
+        )
+        if ok and backend and output.is_file() and output.stat().st_size > 5000:
+            try:
+                from PIL import Image
+                with Image.open(output) as image:
+                    image.convert("RGB").load()
+                    if image.width >= 128 and image.height >= 128:
+                        return f"cloud-api/{backend}"
+            except Exception:
+                pass
+    raise RuntimeError(
+        "PRODUCTION ACCEPTANCE REQUIRES REAL VISUAL PROVIDER. "
+        "No real visual backend is available. Fallback generation is prohibited in production mode."
+    )
+
+
 def generate_visual(
     scene_index: int,
     title: str,
@@ -178,6 +236,11 @@ def generate_visual(
     """
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if production_mode_enabled() and _force_fallback_enabled():
+        raise RuntimeError(
+            "FATAL: AURELIA_FORCE_FALLBACK=1 cannot be used with "
+            "AURELIA_PRODUCTION_MODE=1. Production Acceptance requires a real visual provider."
+        )
 
     def _log(msg: str) -> None:
         if logger is not None:
@@ -255,7 +318,12 @@ def generate_visual(
     elif backend_used != "stable-diffusion":
         _log(f"[VISUAL] Scene {scene_index+1}: cloud API skipped by AURELIA_FORCE_FALLBACK=1")
 
-    # ── 3. Pillow procedural (guaranteed fallback) ────────────────────────
+    # ── 3. Pillow procedural (development-only fallback) ────────────────
+    if production_mode_enabled() and not backend_used.startswith(("stable-diffusion", "cloud-api")):
+        raise RuntimeError(
+            "PRODUCTION ACCEPTANCE REQUIRES REAL VISUAL PROVIDER. "
+            "No real visual backend is available. Fallback generation is prohibited in production mode."
+        )
     if not backend_used.startswith(("stable-diffusion", "cloud-api")):
         _log(f"[VISUAL][FALLBACK] Scene {scene_index+1}: Pillow procedural")
         _generate_pillow(scene_index, title, text, output_path, direction, width, height)
@@ -328,4 +396,9 @@ def _probe_tts() -> list[str]:
     return available
 
 
-__all__ = ["generate_visual", "probe_sd_backend", "backend_status"]
+__all__ = [
+    "generate_visual",
+    "production_mode_enabled",
+    "assert_production_visual_provider",
+    "backend_status",
+]

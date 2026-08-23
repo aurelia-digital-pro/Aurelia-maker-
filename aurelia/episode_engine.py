@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from copy import deepcopy
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -273,6 +274,30 @@ class EpisodeProduction:
                         shot.get("framing", ""),
                         shot.get("motion_intent", ""),
                     ]))
+                    # Preserve scene continuity while making shot grammar real:
+                    # the visual backend receives structured per-shot camera,
+                    # lens, motion, and depth values instead of only a trailing
+                    # note that could be ignored by the image model.
+                    shot_direction = deepcopy(scene.direction)
+                    shot_camera = shot_direction.setdefault("camera", {})
+                    shot_motion = shot_direction.setdefault("motion", {})
+                    shot_depth = shot_direction.setdefault("depth", {})
+                    framing = str(shot.get("framing", "cinematic"))
+                    lens_by_framing = {
+                        "extreme_wide": 18.0,
+                        "wide": 24.0,
+                        "medium": 50.0,
+                        "over_shoulder": 50.0,
+                        "close_up": 85.0,
+                        "extreme_close_up": 100.0,
+                    }
+                    shot_camera["framing"] = framing
+                    shot_camera["lens_mm"] = lens_by_framing.get(framing, shot_camera.get("lens_mm", 35.0))
+                    shot_camera["movement"] = shot.get("motion_intent", shot_camera.get("movement", "static"))
+                    shot_motion["type"] = shot.get("motion_intent", shot_motion.get("type", "static"))
+                    shot_motion["magnitude"] = shot.get("motion_magnitude", shot_motion.get("magnitude", 0.0))
+                    shot_depth["depth_of_field"] = shot.get("depth_of_field", shot_depth.get("depth_of_field", 0.0))
+                    shot_direction["shot_function"] = shot.get("shot_function", "coverage")
 
                     if checkpoint.is_done(scene.index, shot_idx, path):
                         prov = checkpoint.get_provenance(scene.index, shot_idx)
@@ -284,7 +309,7 @@ class EpisodeProduction:
                     else:
                         prov = generate_visual(
                             scene.index, scene.title, scene.text, path,
-                            direction=scene.direction, width=512, height=512,
+                            direction=shot_direction, width=512, height=512,
                             visual_note=visual_note, run_id=self._run_id,
                             logger=self._emit,
                         )

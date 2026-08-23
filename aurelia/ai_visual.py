@@ -263,13 +263,23 @@ def build_scene_prompt(
     dof = depth.get("depth_of_field") or 0.0
     key_color = key.get("color") or "neutral"
     haze = atmosphere.get("haze") or 0.0
+    shot_function = str(direction.get("shot_function", "coverage"))
+    composition = {
+        "establishing": "environmental establishing composition, architecture and location dominant, subject small in frame",
+        "action": "dynamic action composition, visible spatial context and gesture",
+        "reaction": "emotional reaction composition, expressive face with surrounding context",
+        "climax": "dramatic focal composition, strong foreground-background separation",
+        "transition": "atmospheric transitional composition, environment and light dominant",
+        "resolution": "calm resolving composition, open space and hopeful environmental detail",
+        "coverage": "story-driven composition with visible setting",
+    }.get(shot_function, "story-driven composition with visible setting")
 
     concise_title = _compact_words(title, 5)
     concise_description = _compact_words(description, 10)
     prompt = (
         f"photorealistic cinematic film still, {environment} setting, "
         f"subject: {concise_title}, {concise_description}; "
-        f"{framing} shot, {lens}mm lens, {movement} camera, depth of field {dof:.1f}; "
+        f"{composition}; {framing} shot, {lens}mm lens, {movement} camera, depth of field {dof:.1f}; "
         f"lighting {key_color}, haze {haze:.1f}; "
         "no text, no subtitles, no watermark, high quality"
     )

@@ -84,14 +84,29 @@ def plan_scenes(script_text: str, min_scenes: int = 3, max_scenes: int = 20) -> 
         ) and len(p) > 30
     ]
 
-    # If still fewer than min_scenes, be less strict
-    if len(filtered) < min_scenes and len(expanded) >= min_scenes:
-        filtered = [p for p in expanded if len(p) > 15]
+    # If paragraph splitting produced too few scenes, use genuine sentence
+    # boundaries before falling back to a single scene. This keeps short,
+    # single-paragraph film/series scripts multi-scene when their narrative
+    # actually contains enough distinct sentences, without inventing content.
+    if len(filtered) < min_scenes:
+        sentence_units: list[str] = []
+        for paragraph in expanded:
+            sentence_units.extend(
+                part.strip()
+                for part in re.split(r"(?<=[.!?؟])\s+", paragraph)
+                if len(part.strip()) > 15
+            )
+        if len(sentence_units) >= min_scenes:
+            filtered = sentence_units
+        elif len(filtered) < min_scenes and len(expanded) >= min_scenes:
+            filtered = [p for p in expanded if len(p) > 15]
 
     # Enforce max
     if len(filtered) > max_scenes:
         # Merge small scenes to reduce count
-        step = len(filtered) // max_scenes + 1
+        # Use ceil(len / max_scenes); floor-plus-one can collapse six
+        # genuine scene paragraphs into only two groups.
+        step = max(1, (len(filtered) + max_scenes - 1) // max_scenes)
         merged: list[str] = []
         for i in range(0, len(filtered), step):
             group = " ".join(filtered[i: i + step])

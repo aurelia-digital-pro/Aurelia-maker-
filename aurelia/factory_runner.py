@@ -64,6 +64,49 @@ def _effective_planned_duration(production: "EpisodeProduction", narration: Path
     return max(planned_dur, narration_dur)
 
 
+def _build_production_manifest(
+    *,
+    job: "ProductionJob",
+    title: str,
+    language: str,
+    profile: str,
+    script_path: Path,
+    source_text_sha256: str,
+    final_outputs: dict[str, Path],
+    sound_design: Path | None,
+    stage_artifacts_root: Path,
+    delivery_validation: dict[str, Any],
+    qc: dict[str, Any],
+    visual_qc: dict[str, Any],
+    production: "EpisodeProduction",
+) -> dict[str, Any]:
+    """Build the canonical manifest consumed by the final-proof workflow step.
+
+    QC runs before DELIVERY, while DELIVERY historically rewrote the manifest
+    with only delivery metadata. Keep both full QC results here so proof
+    generation can verify the same gate that accepted the final MP4.
+    """
+    return {
+        "job_id":   job.job_id,
+        "episode_id": job.episode_id,
+        "title":    title,
+        "language": language,
+        "profile":  profile,
+        "source":   "chat",
+        "source_script":     str(script_path),
+        "source_text_sha256": source_text_sha256,
+        "outputs":  {k: str(v) for k, v in final_outputs.items()},
+        "sound_design_path": str(sound_design) if sound_design else None,
+        "stage_artifacts": str(stage_artifacts_root),
+        "stage_artifact_count": len(PRODUCTION_STAGES),
+        "delivery_validation": delivery_validation,
+        "qc": qc,
+        "visual_qc": visual_qc,
+        "directing":    [scene.direction for scene in production.scenes],
+        "environments": [s.direction.get("environment", "?") for s in production.scenes],
+    }
+
+
 class FactoryRunner:
     def __init__(self, root: str | Path):
         self.root = Path(root)
@@ -535,7 +578,8 @@ class FactoryRunner:
                 raise RuntimeError(
                     f"QC FATAL — mp4_fatals={fatal_msgs}"
                 )
-            return {**data, "stage": "QC", "qc_passed": qc["passed"],
+            return {**data, "stage": "QC", "qc": qc,
+                    "qc_passed": qc["passed"],
                     "qc_fatals": len(qc["fatals"]),
                     "qc_warnings": len(qc["warnings"])}  # no Path, serializable
 
@@ -573,23 +617,24 @@ class FactoryRunner:
                 "expected_sha256": None,
             })
             final_outputs["final"] = Path(delivered["artifact"])  # closure only
-            manifest = {
-                "job_id":   job.job_id,
-                "episode_id": job.episode_id,
-                "title":    title,
-                "language": language,
-                "profile":  profile,
-                "source":   "chat",
-                "source_script":     str(script_path),
-                "source_text_sha256": source_sha256,
-                "outputs":  {k: str(v) for k, v in final_outputs.items()},
-                "sound_design_path": str(sound_design) if sound_design else None,
-                "stage_artifacts": str(stage_artifacts_root),
-                "stage_artifact_count": len(PRODUCTION_STAGES),
-                "delivery_validation": delivered["validation"],
-                "directing":    [scene.direction for scene in production.scenes],
-                "environments": [s.direction.get("environment", "?") for s in production.scenes],
-            }
+            qc = data.get("qc")
+            if not isinstance(qc, dict):
+                raise RuntimeError("DELIVERY requires the complete QC result")
+            manifest = _build_production_manifest(
+                job=job,
+                title=title,
+                language=language,
+                profile=profile,
+                script_path=script_path,
+                source_text_sha256=source_sha256,
+                final_outputs=final_outputs,
+                sound_design=sound_design,
+                stage_artifacts_root=stage_artifacts_root,
+                delivery_validation=delivered["validation"],
+                qc=qc,
+                visual_qc=visual_qc,
+                production=production,
+            )
             (production.root / "production_manifest.json").write_text(
                 json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
             )

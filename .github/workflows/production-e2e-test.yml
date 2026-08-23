@@ -149,30 +149,34 @@ jobs:
               print(f'TTS AR OK: {out_ar.stat().st_size} bytes')
           PY
 
-      - name: Run visual generation test (Pillow fallback)
+      - name: Run real visual provider generation test
         run: |
           python - <<'PY'
           from pathlib import Path
-          from aurelia.ai_visual import generate_scene_image
+          import hashlib
+          import statistics
           import tempfile
+          from PIL import Image, ImageStat
+          from aurelia.visual_backend import generate_visual
 
           with tempfile.TemporaryDirectory() as tmp:
               out = Path(tmp) / 'scene_01.png'
-              generate_scene_image(
+              provenance = generate_visual(
                   0, 'الفضاء والكون', 'في قلب الكون الرقمي', out,
-                  direction={'environment': 'space'}, width=256, height=256,
+                  direction={'environment': 'space'}, width=512, height=512,
+                  visual_note='real provider acceptance preflight',
+                  run_id='ci-provider-preflight', logger=print,
               )
+              backend = str(provenance.get('backend', ''))
+              assert backend.startswith(('stable-diffusion', 'cloud-api/')), provenance
+              assert provenance.get('fallback') is False, provenance
+              assert 'pillow' not in backend.lower(), provenance
               assert out.is_file() and out.stat().st_size > 5000, f'Visual generation failed: {out}'
-              print(f'Visual OK: {out.stat().st_size} bytes')
-
-              # Check it has real pixel variance
-              from PIL import Image, ImageStat
-              import statistics
               with Image.open(out) as img:
                   stat = ImageStat.Stat(img.convert('RGB'))
                   stddev = statistics.fmean(stat.stddev)
                   assert stddev >= 4, f'Image has no visual signal: stddev={stddev}'
-              print(f'Visual signal OK: stddev={stddev:.2f}')
+              print(f'Real visual provider OK: {backend}; bytes={out.stat().st_size}; sha256={hashlib.sha256(out.read_bytes()).hexdigest()[:16]}...; stddev={stddev:.2f}')
           PY
 
       - name: Run music generation test
@@ -323,6 +327,78 @@ jobs:
           print(f"VERIFIED: {proof['episode_id']}  sha256={proof['sha256'][:16]}...")
           PY
 
+      - name: Build final production proof
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path('.')
+          proof_path = root / 'runs' / 'e2e' / 'production_proof.json'
+          proof = json.loads(proof_path.read_text(encoding='utf-8'))
+          manifests = sorted((root / 'runs' / 'e2e' / 'output').glob('**/production_manifest.json'))
+          visual_manifests = sorted((root / 'runs' / 'e2e' / 'output').glob('**/visuals/visual_manifest.json'))
+          assert len(manifests) == 1, f'Expected one production manifest, got {manifests}'
+          assert len(visual_manifests) == 1, f'Expected one visual manifest, got {visual_manifests}'
+          manifest = json.loads(manifests[0].read_text(encoding='utf-8'))
+          visual = json.loads(visual_manifests[0].read_text(encoding='utf-8'))
+          qc = manifest['qc']
+          visual_qc = manifest['visual_qc']
+          backends = [str(value) for value in visual.get('backends_used', [])]
+          assert proof['accepted'] is True
+          assert qc['delivery_blocked'] is False
+          assert not qc['fatals'], qc['fatals']
+          assert visual_qc['passed'] is True, visual_qc
+          assert visual.get('total_fallbacks', 0) == 0, visual
+          assert visual.get('fallback_rate', 1) == 0, visual
+          assert backends and all(
+              value.startswith(('stable-diffusion', 'cloud-api/')) and 'pillow' not in value.lower()
+              for value in backends
+          ), backends
+          artifact = root / proof['artifact']
+          assert artifact.is_file() and artifact.stat().st_size >= 50_000
+          actual_sha = hashlib.sha256(artifact.read_bytes()).hexdigest()
+          assert actual_sha == proof['sha256']
+
+          qc_lines = []
+          for check in qc.get('checks', []):
+              marker = 'PASS' if check.get('passed') else 'FAIL'
+              qc_lines.append(f"| {check.get('name')} | {marker} | {check.get('severity')} | {check.get('message', '')} |")
+          proof_md = f"""# AURELIA Maker — Production Proof
+
+          > **FINAL ACCEPTANCE: PASSED** — this proof is generated only after the real production MP4 passes FFprobe, full decode, freeze-frame QC, temporal variation, audio/video checks, visual provenance, and artifact integrity.
+
+          | Field | Value |
+          |---|---|
+          | Episode | `{proof['episode_id']}` |
+          | Job ID | `{proof['job_id']}` |
+          | Git SHA | `{os.environ.get('GITHUB_SHA', '')}` |
+          | GitHub Actions run | [{os.environ.get('GITHUB_RUN_ID', '')}]({os.environ.get('GITHUB_SERVER_URL', '')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}) |
+          | Artifact | `{proof['artifact']}` |
+          | Duration | `{proof['duration_seconds']:.3f}s` |
+          | Size | `{proof['size_bytes']} bytes` |
+          | SHA-256 | `{proof['sha256']}` |
+          | Frame diversity | `{proof['frame_diversity']}` unique sampled frames |
+          | Visual provider(s) | `{', '.join(backends)}` |
+          | Pillow fallbacks | `0` |
+          | Visual variation threshold | `0.005` |
+
+          ## MP4 QC checks
+
+          | Check | Result | Severity | Message |
+          |---|---|---|---|
+          {chr(10).join(qc_lines)}
+
+          ## Provenance gates
+
+          The production visual manifest is `{visual_manifests[0]}` and records `source=chat`, `motion_renderer=CinematicVisualEngine`, `total_fallbacks=0`, and the real provider backend(s) listed above. The final artifact hash was recomputed after the hard artifact verification step and matches `production_proof.json`.
+          """
+          (root / 'PRODUCTION_PROOF.md').write_text(proof_md, encoding='utf-8')
+          print(proof_md)
+          PY
+
       - name: Upload proof artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -332,4 +408,7 @@ jobs:
             runs/e2e/episode-*-FINAL.mp4
             runs/e2e/production_proof.json
             runs/e2e/proof_frames/*.png
+            runs/e2e/output/**/production_manifest.json
+            runs/e2e/output/**/visuals/visual_manifest.json
+            PRODUCTION_PROOF.md
           retention-days: 30

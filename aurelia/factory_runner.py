@@ -419,6 +419,9 @@ class FactoryRunner:
                 dur = _pd(narration)
             except Exception:
                 pass
+            if dur <= 0:
+                raise RuntimeError("NARRATION produced no measurable duration")
+            production._apply_shot_timing(dur)
             return {**data, "stage": "NARRATION",
                     "narration_duration": dur,
                     "narration_language": production.language}

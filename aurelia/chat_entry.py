@@ -84,15 +84,19 @@ def handle_chat_production(runner: FactoryRunner, message: str) -> dict[str, Any
 
     profile = _detect_profile(text)
 
-    # Strip command lines from script body
+    # Remove only the synthetic leading command added by the HTTP-equivalent
+    # entrypoint. Any command/header already present in the supplied script is
+    # part of the user payload and must remain bound in provenance.
     script_lines: list[str] = []
+    leading_command_removed = False
     for line in text.splitlines():
         stripped = line.strip()
-        if re.search(
+        if not leading_command_removed and re.search(
             r'^(?:create|produce|make|generate|build|\u0623\u0646\u0634\u0626|\u0623\u0646\u062a\u062c|\u0627\u0635\u0646\u0639|\u0627\u0646\u062a\u062c)'
             r'(?:\s+(?:episode|\u062d\u0644\u0642\u0629|\u0641\u064a\u0644\u0645|film|movie|documentary))?\s*\d*\s*$',
             stripped, re.IGNORECASE,
         ):
+            leading_command_removed = True
             continue
         if re.fullmatch(
             r'(?:profile|mode)\s*[:=]\s*(?:youtube|tiktok|both)',

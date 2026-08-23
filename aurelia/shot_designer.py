@@ -251,8 +251,8 @@ class ShotDesigner:
     def _max_shots(self, action_level: float, duration: float) -> int:
         if duration < 5.0:
             return 1
-        if duration < 10.0:
-            return 2
+        if duration < 8.0:
+            return 3
         if action_level > 0.7:
             return min(5, max(3, math.ceil(duration / 4)))
         if action_level > 0.4:
@@ -267,7 +267,9 @@ class ShotDesigner:
         delta = magnitude * 0.20
 
         if motion == "static":
-            return 1.0, 1.0
+            # Static is a narrative intent, not a frozen frame. Preserve a
+            # stable composition while guaranteeing a measurable micro-zoom.
+            return 1.0, 1.02
         if motion in ("pull_out", "reveal_wide"):
             return 1.0 + delta, 1.0
         if motion in ("tracking", "slow_drift", "orbit", "pan_left", "pan_right"):

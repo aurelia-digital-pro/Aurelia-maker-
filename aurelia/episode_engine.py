@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from .ambient_synth import synthesize_ambient
+from .continuity import ContinuityContext
 from .directing_engine import DirectingEngine
 from .media import (
     apply_color_grade,
@@ -38,8 +40,14 @@ from .media import (
     validate_visual_manifest,
 )
 from .planner import plan_scenes
+from .music_engine import generate_cinematic_music
+from .providers.audio import EdgeTTSProvider
+from .providers.ambient import SynthAmbientProvider
+from .providers.music import CinematicMusicProvider
 from .scene_analyzer import SceneAnalyzer
 from .shot_designer import ShotDesigner, ShotSpec
+from .shot_timer import allocate as allocate_shot_durations
+from .transitions import select_transition
 from .tts import synthesize_script
 from .visual_backend import generate_visual  # PRIMARY: SD → Cloud API → Pillow
 from .visual_checkpoint import VisualCheckpoint
@@ -158,7 +166,9 @@ class EpisodeProduction:
     def build_scene_plan(self, script_text: str) -> list[ScenePlan]:
         """PRIMARY: planner segments → SceneAnalyzer enriches → ShotDesigner assigns shots."""
         word_count = len(script_text.split())
-        dynamic_max = max(3, min(60, word_count // 50))
+        # Scale the scene ceiling with narrative length; approximately one
+        # scene per 25 words keeps long films paced without hardcoding counts.
+        dynamic_max = max(5 if word_count >= 80 else 3, min(60, (word_count + 19) // 20))
         raw = plan_scenes(script_text, min_scenes=3, max_scenes=dynamic_max)
         analyses = self._analyzer.analyze_sequence(raw)
         scenes: list[ScenePlan] = []
@@ -219,6 +229,7 @@ class EpisodeProduction:
         total_fallbacks = 0
         total_images = 0
         total_resumed = 0
+        continuity_anchors: dict[str, str] = {}
 
         # One checkpoint file per production root — persists across restarts
         checkpoint = VisualCheckpoint(
@@ -231,6 +242,19 @@ class EpisodeProduction:
 
         for scene in self.scenes:
             env = scene.direction.get("environment", "abstract")
+            lighting_key = str(((scene.direction.get("lighting") or {}).get("key") or {}).get("color", "neutral"))
+            palette = list(scene.direction.get("visual_palette") or [str(env), lighting_key, "cinematic shadow"])
+            for character in (scene.analysis or {}).get("characters", []) or []:
+                name = str(character)
+                continuity_anchors.setdefault(name, f"recurring subject associated with {env} environment")
+            context = ContinuityContext(
+                palette=palette,
+                environment_description=str(scene.direction.get("environment_description") or f"{env} cinematic environment"),
+                lighting_key=lighting_key,
+                character_anchors=continuity_anchors,
+            )
+            scene.direction["visual_palette"] = palette
+            scene.direction["continuity"] = context.to_dict()
             self._emit(f"  Scene {scene.index + 1} [{env}]: {scene.title[:50]}")
             shot_paths: list[Path] = []
             shots = scene.shots or []
@@ -298,6 +322,7 @@ class EpisodeProduction:
                     shot_motion["magnitude"] = shot.get("motion_magnitude", shot_motion.get("magnitude", 0.0))
                     shot_depth["depth_of_field"] = shot.get("depth_of_field", shot_depth.get("depth_of_field", 0.0))
                     shot_direction["shot_function"] = shot.get("shot_function", "coverage")
+                    shot_direction["continuity"] = context.to_dict()
 
                     if checkpoint.is_done(scene.index, shot_idx, path):
                         prov = checkpoint.get_provenance(scene.index, shot_idx)
@@ -387,8 +412,9 @@ class EpisodeProduction:
         """Synthesize narration. TTS auto-detects language from text content."""
         self._emit(f"Synthesizing narration (TTS, language={self.language})...")
         narration_path = self.dirs["audio"] / "narration.wav"
-        # synthesize_script auto-detects ar/en from text — no language kwarg
-        synthesize_script(script_text, narration_path)
+        # The provider delegates to the same auto-detecting offline chain while
+        # keeping the stage contract explicit and testable.
+        EdgeTTSProvider().generate(script_text, narration_path, language=self.language)
         if not narration_path.exists() or narration_path.stat().st_size < 100:
             raise RuntimeError("Narration synthesis failed — TTS produced no output")
         duration = probe_duration(narration_path)
@@ -455,6 +481,26 @@ class EpisodeProduction:
         srt_path.write_text("\n".join(lines), encoding="utf-8")
         return srt_path
 
+    def _apply_shot_timing(self, narration_duration: float) -> None:
+        """Allocate the real narration length across every planned shot."""
+        flattened: list[dict[str, Any]] = [shot for scene in self.scenes for shot in scene.shots]
+        if not flattened:
+            return
+        durations = allocate_shot_durations(flattened, narration_duration)
+        cursor = 0
+        for scene in self.scenes:
+            scene_total = 0.0
+            for shot in scene.shots:
+                shot["duration"] = durations[cursor]
+                scene_total += durations[cursor]
+                cursor += 1
+            if scene.shots:
+                scene.duration = scene_total
+        self._emit(
+            f"Shot timing allocated across {len(flattened)} shots: "
+            f"{sum(durations):.2f}s narration coverage"
+        )
+
     def render_shots(
         self, scene_assets: dict[str, list[Path]]
     ) -> list[Path]:
@@ -498,6 +544,7 @@ class EpisodeProduction:
             else:
                 shot_iter = [(i, {}) for i in range(len(assets))]
 
+            previous_shot: dict[str, Any] | None = None
             for i, shot_dict in shot_iter:
                 asset    = assets[min(i, len(assets) - 1)]
                 out      = self.dirs["shots"] / (
@@ -525,7 +572,13 @@ class EpisodeProduction:
                     },
                 )
                 if all_clips:
-                    transition = str(shot_dict.get("transition_in") or "cut").strip().lower()
+                    scene_change = i == 0 and scene.index > 0
+                    transition_spec = select_transition(
+                        previous_shot, shot_dict, scene_change=scene_change
+                    )
+                    transition = transition_spec.kind.value
+                    if transition == "hard_cut":
+                        transition = "cut"
                     # SceneAnalyzer is authoritative for semantic boundaries. If
                     # its hint is a cut, preserve hard cuts inside a scene but
                     # allow a motivated scene-level xfade when the narrative
@@ -548,10 +601,22 @@ class EpisodeProduction:
                                 transition = "dissolve"
                     boundary_transitions.append(transition)
                 all_clips.append(out)
+                previous_shot = shot_dict
 
         if not all_clips:
             raise RuntimeError("render_shots produced no clips")
         self._shot_transitions = boundary_transitions
+        if self.visual_manifest_path.is_file():
+            try:
+                manifest = json.loads(self.visual_manifest_path.read_text(encoding="utf-8"))
+                for record in manifest.get("scenes", []):
+                    record["rendered_motion"] = True
+                manifest.setdefault("visual_processing", {})["rendered_motion"] = True
+                self.visual_manifest_path.write_text(
+                    json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                pass
         self._emit(
             f"  Applied {sum(t not in {'cut', 'none', ''} for t in boundary_transitions)} "
             f"cinematic transitions across {len(all_clips)} shots"
@@ -560,7 +625,7 @@ class EpisodeProduction:
 
     def assemble_edit(
         self, clips: list[Path], narration_path: Path, music_path: Path | None,
-        sound_design_path: Path | None = None,
+        sound_design_path: Path | None = None, ambient_path: Path | None = None,
     ) -> Path:
         self._emit("Editing — concatenating shots and mixing audio...")
         video_only = self.dirs["edit"] / "video_concat.mp4"
@@ -571,7 +636,7 @@ class EpisodeProduction:
         pad_video_to_duration(video_only, padded_video, target_duration)
         mixed = self.dirs["edit"] / "edit_mixed.mp4"
         mix_narration_and_music(
-            padded_video, narration_path, mixed, music_path, sound_design_path
+            padded_video, narration_path, mixed, music_path, sound_design_path, ambient_path
         )
         return mixed
 
@@ -620,6 +685,8 @@ class EpisodeProduction:
             min_duration_s=max(5.0, planned_dur * 0.5),
             planned_duration_s=planned_dur,
             scene_count=len(self.scenes),
+            narration_path=narration_path,
+            expected_text_path=self.script_path,
         )
 
         total_assets = self._total_visual_assets or None
@@ -675,12 +742,35 @@ class EpisodeProduction:
         scene_assets = self.generate_visual_assets()
         narration = self.synthesize_narration(script_text)
         srt = self.build_subtitles(narration)
+        self._apply_shot_timing(probe_duration(narration))
         duration = max(
             probe_duration(narration),
             sum(scene.duration for scene in self.scenes) + 8.0,
         )
-        music_path = self.dirs["audio"] / "ambient_music.wav"
-        generate_ambient_music(duration + 4.0, music_path)
+        emotional_arc = [str((scene.analysis or {}).get("emotional_register", "neutral")) for scene in self.scenes]
+        music_path = self.dirs["audio"] / "cinematic_music.wav"
+        CinematicMusicProvider().generate(
+            duration + 4.0, music_path, emotional_arc=emotional_arc
+        )
+        ambient_path = self.dirs["audio"] / "ambient_bed.wav"
+        ambient_segments: list[Path] = []
+        for scene in self.scenes:
+            environment = str((scene.direction or {}).get("environment", "abstract"))
+            segment_path = self.dirs["audio"] / f"ambient_scene_{scene.index + 1:02d}.wav"
+            SynthAmbientProvider().generate(
+                environment, max(2.0, scene.duration + 0.25), segment_path,
+                seed=scene.index,
+            )
+            ambient_segments.append(segment_path)
+        try:
+            from pydub import AudioSegment
+            combined = AudioSegment.empty()
+            for segment in ambient_segments:
+                combined += AudioSegment.from_wav(segment)
+            combined.export(ambient_path, format="wav")
+        except Exception:
+            if ambient_segments:
+                ambient_path.write_bytes(ambient_segments[0].read_bytes())
         sound_design_path = self.dirs["audio"] / "sound_design.wav"
         scene_boundaries = []
         cursor = 0.0
@@ -689,7 +779,7 @@ class EpisodeProduction:
             scene_boundaries.append(cursor)
         generate_sound_design(duration, scene_boundaries, sound_design_path)
         clips  = self.render_shots(scene_assets)
-        edit   = self.assemble_edit(clips, narration, music_path, sound_design_path)
+        edit   = self.assemble_edit(clips, narration, music_path, sound_design_path, ambient_path)
         outputs = self.finish(edit, srt, narration_path=narration)
         total_shots = sum(len(s.shots) for s in self.scenes)
         return {

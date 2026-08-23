@@ -264,6 +264,19 @@ def build_scene_prompt(
     key_color = key.get("color") or "neutral"
     haze = atmosphere.get("haze") or 0.0
     shot_function = str(direction.get("shot_function", "coverage"))
+    continuity = direction.get("continuity") or {}
+    continuity_parts = []
+    if isinstance(continuity, dict):
+        if continuity.get("environment_description"):
+            continuity_parts.append(f"same environment: {continuity['environment_description']}")
+        if continuity.get("palette"):
+            continuity_parts.append(f"same color palette: {', '.join(map(str, continuity['palette']))}")
+        if continuity.get("lighting_key"):
+            continuity_parts.append(f"same lighting key: {continuity['lighting_key']}")
+        anchors = continuity.get("character_anchors") or {}
+        if anchors:
+            continuity_parts.append("same character anchors: " + "; ".join(f"{k}={v}" for k, v in anchors.items()))
+    continuity_hint = "; ".join(continuity_parts)
     composition = {
         "establishing": "environmental establishing composition, architecture and location dominant, subject small in frame",
         "action": "dynamic action composition, visible spatial context and gesture",
@@ -281,6 +294,7 @@ def build_scene_prompt(
         f"subject: {concise_title}, {concise_description}; "
         f"{composition}; {framing} shot, {lens}mm lens, {movement} camera, depth of field {dof:.1f}; "
         f"lighting {key_color}, haze {haze:.1f}; "
+        f"{continuity_hint}; " if continuity_hint else ""
         "no text, no subtitles, no watermark, high quality"
     )
     words = prompt.split()

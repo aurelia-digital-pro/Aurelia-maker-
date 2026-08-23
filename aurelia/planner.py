@@ -63,8 +63,19 @@ def plan_scenes(script_text: str, min_scenes: int = 3, max_scenes: int = 20) -> 
     if not script_text or not script_text.strip():
         raise ValueError("plan_scenes: empty script text")
 
+    # Remove Chat metadata lines before paragraph and sentence planning. Chat
+    # requests often place Episode/Title/Language headers directly above the
+    # first paragraph without a blank line.
+    body_lines = [
+        line for line in script_text.splitlines()
+        if not re.match(
+            r'^\s*(create\s+episode|episode|title|العنوان|language|lang|اللغة|narrator|راوي|الحلقة)\s*[:=]?',
+            line, re.IGNORECASE,
+        )
+    ]
+    body_text = "\n".join(body_lines)
     # Split on blank lines first
-    raw_paragraphs = [p.strip() for p in re.split(r'\n{2,}', script_text) if p.strip()]
+    raw_paragraphs = [p.strip() for p in re.split(r'\n{2,}', body_text) if p.strip()]
 
     # Expand long paragraphs into sub-scenes
     expanded: list[str] = []
@@ -84,20 +95,26 @@ def plan_scenes(script_text: str, min_scenes: int = 3, max_scenes: int = 20) -> 
         ) and len(p) > 30
     ]
 
-    # If paragraph splitting produced too few scenes, use genuine sentence
-    # boundaries before falling back to a single scene. This keeps short,
-    # single-paragraph film/series scripts multi-scene when their narrative
-    # actually contains enough distinct sentences, without inventing content.
-    if len(filtered) < min_scenes:
-        sentence_units: list[str] = []
-        for paragraph in expanded:
-            sentence_units.extend(
-                part.strip()
-                for part in re.split(r"(?<=[.!?؟])\s+", paragraph)
-                if len(part.strip()) > 15
-            )
-        if len(sentence_units) >= min_scenes:
-            filtered = sentence_units
+    # Use genuine sentence boundaries as narrative units. For a long script,
+    # group roughly two units per scene so pacing scales with story length
+    # instead of collapsing everything into one paragraph scene. The resulting
+    # target is derived from the script, not from an episode ID or fixed count.
+    sentence_units: list[str] = []
+    for paragraph in raw_paragraphs:
+        sentence_units.extend(
+            part.strip()
+            for part in re.split(r"(?<=[.!?؟])\s+", paragraph)
+            if len(part.strip()) >= 8
+        )
+    adaptive_target = max(min_scenes, min(max_scenes, (len(sentence_units) + 1) // 2))
+    if len(filtered) < adaptive_target:
+        if len(sentence_units) >= adaptive_target:
+            target_groups = min(adaptive_target, len(sentence_units))
+            groups: list[list[str]] = [[] for _ in range(target_groups)]
+            for unit_index, sentence in enumerate(sentence_units):
+                group_index = min(target_groups - 1, (unit_index * target_groups) // len(sentence_units))
+                groups[group_index].append(sentence)
+            filtered = [" ".join(group) for group in groups if group]
         elif len(filtered) < min_scenes and len(expanded) >= min_scenes:
             filtered = [p for p in expanded if len(p) > 15]
 

@@ -223,6 +223,9 @@ class SeriesManager:
                         ep.run_id = run_id
                     if story_state:
                         ep.story_state.update(story_state)
+                        # Promote the latest completed episode state to the
+                        # series bible so the next episode can retrieve it.
+                        s.story_state.update(story_state)
                     self._save(s)
                     return
 

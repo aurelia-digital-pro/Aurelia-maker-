@@ -95,11 +95,15 @@ def assemble_cinematic_clips(
             overlap = min(max(float(transition_duration), 0.1), duration_a / 3.0, duration_b / 3.0)
             xfade_name = {
                 "dissolve": "fade",
+                "crossfade": "fade",
                 "fade_in": "fade",
                 "fade_out": "fadeblack",
                 "fade": "fadeblack",
                 "light": "fadewhite",
                 "light_transition": "fadewhite",
+                "wipe": "wiperight",
+                "wiperight": "wiperight",
+                "slideleft": "slideleft",
             }.get(transition, "fade")
             step_output = output_path.parent / f".cinematic-step-{index:03d}.mp4"
             graph = (
@@ -123,6 +127,13 @@ def assemble_cinematic_clips(
 
 
 def pad_video_to_duration(source: str | Path, output: str | Path, duration: float) -> Path:
+    """Fit video to a target duration without cloning the final frame.
+
+    This legacy helper remains for compatibility, but it now uses a warned
+    motion-preserving retime when the visual edit is shorter than narration.
+    Clone padding is forbidden because it creates freeze-frame tails in the
+    final encoded stream.
+    """
     source = _require_file(source, "Video")
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,9 +142,12 @@ def pad_video_to_duration(source: str | Path, output: str | Path, duration: floa
         if Path(source) != output_path:
             _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(source), "-c", "copy", str(output_path)], output_path)
         return output_path
-    pad_seconds = max(0.0, duration - current)
+    if current <= 0:
+        raise RuntimeError(f"Cannot retime video with invalid duration: {source}")
+    print(f"[MEDIA][WARNING] video shorter than target; retiming motion instead of clone-padding ({current:.3f}s -> {duration:.3f}s)")
+    speed_factor = duration / current
     _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(source),
-          "-vf", f"tpad=stop_mode=clone:stop_duration={pad_seconds:.6f}",
+          "-vf", f"setpts=PTS*{speed_factor:.8f}",
           "-t", f"{duration:.6f}", "-an", "-c:v", "libx264", "-preset", "medium",
           "-crf", "18", "-pix_fmt", "yuv420p", str(output_path)], output_path)
     return output_path
@@ -184,6 +198,7 @@ def mix_narration_and_music(
     video: str | Path, narration: str | Path, output: str | Path,
     music: str | Path | None = None,
     sound_design: str | Path | None = None,
+    ambient: str | Path | None = None,
 ) -> Path:
     video = _require_file(video, "Video")
     narration = _require_file(narration, "Narration")
@@ -213,6 +228,11 @@ def mix_narration_and_music(
             "attack=10:release=180:makeup=1[sfx]"
         )
         mix_inputs.append("[sfx]")
+    if ambient is not None and Path(ambient).is_file() and Path(ambient).stat().st_size > 0:
+        inputs.append(Path(ambient))
+        ambient_index = len(inputs) - 1
+        filters.append(f"[{ambient_index}:a]volume=0.22[amb]")
+        mix_inputs.append("[amb]")
     filters.append(
         "".join(mix_inputs) + f"amix=inputs={len(mix_inputs)}:duration=longest:"
         f"dropout_transition=2,"
@@ -467,6 +487,7 @@ def validate_visual_manifest(
     checks: dict[str, bool] = {
         "manifest_exists": manifest_path.is_file(),
         "backend_is_local": False,
+        "backend_not_unknown": False,
         "source_is_chat": False,
         "source_binding_valid": source_text_sha256 is None,
         "scenes_present": False,
@@ -494,6 +515,7 @@ def validate_visual_manifest(
                 raw_backend in local_backends or bool(raw_backend)
             )
             check_details["backend"] = raw_backend
+            checks["backend_not_unknown"] = bool(raw_backend) and str(raw_backend).lower() != "unknown"
 
             checks["source_is_chat"] = manifest.get("source") == "chat"
             check_details["source"] = manifest.get("source")
@@ -636,6 +658,8 @@ def validate_visual_manifest(
                 manifest.get("visual_processing", {}).get("motion_renderer")
                 == "CinematicVisualEngine"
             )
+            motion_records = [scene.get("rendered_motion") is True for scene in scenes]
+            checks["rendered_motion_provenance"] = bool(motion_records) and all(motion_records)
             check_details["visual_processing"] = manifest.get("visual_processing")
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             check_details["parse_error"] = str(exc)

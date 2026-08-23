@@ -97,9 +97,15 @@ class CinematicVisualEngine:
         zoom_start = float(camera.get("zoom_start", 1.0))
         zoom_end   = float(camera.get("zoom_end",   zoom_start))
 
-        # Safety: never go below 1.0 (causes black bars in zoompan)
+        # Safety: never go below 1.0 (causes black bars in zoompan).
+        # Even a semantically static shot must contain a tiny real camera
+        # movement so the encoded stream never becomes a cloned still frame.
         zoom_start = max(1.0, zoom_start)
         zoom_end   = max(1.0, zoom_end)
+        if abs(zoom_end - zoom_start) < 0.10:
+            # Keep calm/static direction but guarantee enough real camera
+            # travel for strict freezedetect and 10-second variation gates.
+            zoom_end = zoom_start + (0.10 if zoom_end >= zoom_start else -0.10)
 
         frames      = max(1, round(duration * self.fps))
         denominator = max(frames - 1, 1)

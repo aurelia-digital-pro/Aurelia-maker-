@@ -10,3 +10,4 @@ imageio-ffmpeg>=0.4.9
 # Arabic RTL text shaping for subtitles and title cards
 arabic-reshaper>=3.0.0
 python-bidi>=0.4.2
+pytest>=8.0.0

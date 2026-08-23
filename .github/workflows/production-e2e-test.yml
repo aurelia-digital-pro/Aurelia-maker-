@@ -54,6 +54,9 @@ jobs:
         run: |
           pip install --quiet -r requirements.txt
 
+      - name: Run repository regression suite
+        run: pytest -q tests/
+
       - name: Verify imports
         run: |
           python -c "

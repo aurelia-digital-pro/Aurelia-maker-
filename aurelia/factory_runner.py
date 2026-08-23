@@ -215,11 +215,14 @@ class FactoryRunner:
             raise FileNotFoundError(
                 f"Chat production input does not exist: {script_path}"
             )
-        script_text = script_path.read_text(encoding="utf-8").strip()
+        source_text = script_path.read_text(encoding="utf-8")
+        script_text = source_text.strip()
         if not script_text:
             raise ValueError(f"Empty production request: {script_path}")
 
         title, language = self._extract_metadata(script_text)
+        # Bind provenance to the exact normalized script body written by
+        # Chat entry after removing only its synthetic leading command.
         source_sha256 = hashlib.sha256(script_text.encode("utf-8")).hexdigest()
 
         production_root = (

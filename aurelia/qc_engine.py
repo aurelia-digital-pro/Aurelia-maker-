@@ -66,6 +66,8 @@ def run_qc(
     expected_sha256: str | None = None,
     scene_count: int | None = None,
     required_artifacts: list[Path | str] | None = None,
+    narration_path: Path | str | None = None,
+    expected_text_path: Path | str | None = None,
 ) -> dict[str, Any]:
     """Run full QC on the final delivery MP4.
 
@@ -189,6 +191,28 @@ def run_qc(
         decode_msg = "ffmpeg is unavailable"
     checks.append(_check("full_decode", decode_ok, "FATAL", "" if decode_ok else decode_msg))
 
+    # Production-level freeze detection. A motion-rendered shot may be calm,
+    # but a repeated frame longer than half a second is never acceptable in a
+    # finished film stream.
+    freeze_ok = True
+    freeze_msg = ""
+    if ffmpeg and duration > 0:
+        try:
+            freeze = subprocess.run(
+                [ffmpeg, "-i", str(video_path), "-vf", "freezedetect=n=-60dB:d=0.5", "-an", "-f", "null", "-"],
+                capture_output=True, timeout=180,
+            )
+            stderr = freeze.stderr.decode("utf-8", errors="replace")
+            values = [float(v) for v in re.findall(r"freeze_duration:\s*([0-9.]+)", stderr)]
+            long_freezes = [v for v in values if v > 0.5]
+            freeze_ok = not long_freezes
+            if not freeze_ok:
+                freeze_msg = "freeze durations over 0.5s: " + ", ".join(f"{v:.3f}s" for v in long_freezes[:8])
+        except Exception as exc:
+            freeze_ok = False
+            freeze_msg = f"freezedetect failed: {exc}"
+    checks.append(_check("freeze_frames", freeze_ok, "FATAL", "" if freeze_ok else freeze_msg))
+
     # Sample the encoded video at multiple timestamps. This catches frozen or
     # duplicated output that can still pass ordinary container checks.
     sample_hashes: list[str] = []
@@ -211,6 +235,33 @@ def run_qc(
     if not variation_ok:
         variation_msg = f"Only {unique_samples} unique encoded frames from {len(sample_hashes)} samples"
     checks.append(_check("temporal_variation", variation_ok, "FATAL", "" if variation_ok else variation_msg))
+
+    # Stronger 10-second-window visual variation gate. Frames are decoded at a
+    # small analysis size, then adjacent mean absolute pixel differences are
+    # measured; this checks motion rather than merely distinct timestamps.
+    visual_variation_ok = True
+    visual_variation_msg = ""
+    if ffmpeg and duration >= 10.0:
+        frames: list[bytes] = []
+        for timestamp in range(0, int(duration), 10):
+            try:
+                sample = subprocess.run(
+                    [ffmpeg, "-v", "error", "-ss", str(timestamp), "-i", str(video_path), "-frames:v", "1", "-vf", "scale=64:36,format=gray", "-f", "rawvideo", "pipe:1"],
+                    capture_output=True, timeout=30,
+                )
+                if sample.returncode == 0 and sample.stdout:
+                    frames.append(sample.stdout)
+            except Exception:
+                pass
+        diffs: list[float] = []
+        for first, second in zip(frames, frames[1:]):
+            size = min(len(first), len(second))
+            if size:
+                diffs.append(sum(abs(first[i] - second[i]) for i in range(size)) / (size * 255.0))
+        visual_variation_ok = bool(diffs) and min(diffs) >= 0.005
+        if not visual_variation_ok:
+            visual_variation_msg = f"minimum 10s sample diff {min(diffs) if diffs else 0.0:.4f} < 0.005"
+    checks.append(_check("visual_variation", visual_variation_ok, "FATAL", "" if visual_variation_ok else visual_variation_msg))
 
     # delivery integrity
     if expected_sha256:
@@ -259,14 +310,44 @@ def run_qc(
                 first_start = cues[0][0] if cues else duration
                 last_end = cues[-1][1] if cues else 0.0
                 malformed = any(end <= start or not text for start, end, text in cues)
-                subtitle_complete = bool(cues) and first_start <= 0.5 and last_end >= max(0.0, duration - 1.0) and not malformed
+                actual_words = re.findall(r"[\w']+", " ".join(text for _, _, text in cues).lower())
+                coverage = 1.0
+                if expected_text_path and Path(expected_text_path).is_file():
+                    expected_raw = Path(expected_text_path).read_text(encoding="utf-8", errors="replace")
+                    expected_raw = "\n".join(line for line in expected_raw.splitlines() if not re.match(r"^\s*(episode|title|language)\s*[:=]", line, re.I))
+                    expected_words = re.findall(r"[\w']+", expected_raw.lower())
+                    from collections import Counter
+                    have, need = Counter(actual_words), Counter(expected_words)
+                    covered = sum(min(have[word], count) for word, count in need.items())
+                    coverage = covered / max(1, len(expected_words))
+                subtitle_complete = bool(cues) and first_start <= 0.5 and last_end >= max(0.0, duration - 2.0) and coverage >= 0.90 and not malformed
                 if not subtitle_complete:
-                    subtitle_message = f"cues={len(cues)}, coverage={first_start:.2f}s..{last_end:.2f}s for video {duration:.2f}s"
+                    subtitle_message = f"cues={len(cues)}, word_coverage={coverage:.3f}, coverage={first_start:.2f}s..{last_end:.2f}s for video {duration:.2f}s"
                 else:
                     subtitle_message = ""
             except (OSError, ValueError, UnicodeError) as exc:
                 subtitle_message = f"Subtitle parse failed: {exc}"
         checks.append(_check("subtitle_completeness", subtitle_complete, "FATAL", subtitle_message))
+
+    narration_ok = True
+    narration_message = ""
+    if narration_path is not None:
+        narration_file = Path(narration_path)
+        narration_ok = narration_file.is_file() and narration_file.stat().st_size > 0
+        if narration_ok:
+            narration_probe = _ffprobe(narration_file)
+            narration_fmt = narration_probe.get("format", {})
+            try:
+                narration_duration = float(narration_fmt.get("duration") or 0)
+                narration_ok = narration_duration > 0 and abs(narration_duration - duration) <= max(5.0, duration * 0.05)
+                if not narration_ok:
+                    narration_message = f"narration={narration_duration:.2f}s vs video={duration:.2f}s"
+            except (TypeError, ValueError):
+                narration_ok = False
+                narration_message = "narration duration could not be measured"
+        else:
+            narration_message = f"narration file missing or empty: {narration_file}"
+    checks.append(_check("narration_audible", narration_ok, "FATAL", "" if narration_ok else narration_message))
 
     # black frames (uses blackdetect filter)
     black_ok = True

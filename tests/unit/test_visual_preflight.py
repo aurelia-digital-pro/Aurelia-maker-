@@ -1,7 +1,9 @@
 from pathlib import Path
+import subprocess
 
 from PIL import Image, ImageDraw
 
+from aurelia.media import pad_video_to_duration, probe_duration
 from aurelia.qc_engine import visual_variation_preflight
 from aurelia.visuals import CinematicVisualEngine
 
@@ -37,8 +39,6 @@ def test_visual_preflight_accepts_real_camera_motion(tmp_path: Path):
 
 def test_motion_render_has_no_long_freeze_on_low_texture_plate(tmp_path: Path):
     import re
-    import subprocess
-
     source = tmp_path / "low_texture.png"
     video = tmp_path / "low_texture.mp4"
     Image.new("RGB", (320, 180), (80, 80, 80)).save(source)
@@ -55,3 +55,30 @@ def test_motion_render_has_no_long_freeze_on_low_texture_plate(tmp_path: Path):
     durations = [float(value) for value in re.findall(r"freeze_duration:\s*([0-9.]+)", result.stderr)]
     assert result.returncode == 0
     assert not [duration for duration in durations if duration > 0.5]
+
+
+def test_motion_retime_normalizes_cfr_without_clone_padding(tmp_path: Path):
+    source = tmp_path / "source.mp4"
+    retimed = tmp_path / "retimed.mp4"
+    image = Image.new("RGB", (320, 180), (35, 60, 90))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((20, 20, 150, 150), fill=(210, 120, 45))
+    draw.ellipse((180, 35, 300, 155), fill=(70, 200, 170))
+    source_png = tmp_path / "source.png"
+    image.save(source_png)
+    CinematicVisualEngine(width=320, height=180, fps=24).render_motion(
+        source_png, source, 2.0,
+        camera={"movement": "pan_right", "zoom_start": 1.0, "zoom_end": 1.2},
+        vfx={},
+    )
+    pad_video_to_duration(source, retimed, 3.0)
+    assert 2.9 <= probe_duration(retimed) <= 3.1
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=avg_frame_rate,r_frame_rate",
+         "-of", "default=nw=1", str(retimed)],
+        capture_output=True, text=True, check=False,
+    )
+    assert probe.returncode == 0
+    assert "r_frame_rate=24/1" in probe.stdout
+    assert "avg_frame_rate=24/1" in probe.stdout

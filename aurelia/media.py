@@ -146,8 +146,14 @@ def pad_video_to_duration(source: str | Path, output: str | Path, duration: floa
         raise RuntimeError(f"Cannot retime video with invalid duration: {source}")
     print(f"[MEDIA][WARNING] video shorter than target; retiming motion instead of clone-padding ({current:.3f}s -> {duration:.3f}s)")
     speed_factor = duration / current
+    # Normalize timestamps and frame cadence during retime. A bare setpts can
+    # leave fractional PTS gaps that the later master fps conversion fills by
+    # duplicating frames; those duplicates become real freeze intervals in QC.
+    retime_filter = (
+        f"settb=AVTB,setpts=PTS*{speed_factor:.8f},fps=24:round=near"
+    )
     _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(source),
-          "-vf", f"setpts=PTS*{speed_factor:.8f}",
+          "-vf", retime_filter, "-fps_mode", "cfr", "-r", "24",
           "-t", f"{duration:.6f}", "-an", "-c:v", "libx264", "-preset", "medium",
           "-crf", "18", "-pix_fmt", "yuv420p", str(output_path)], output_path)
     return output_path
@@ -339,9 +345,13 @@ def master_encode(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if profile == "tiktok":
         width, height = 1080, 1920
+    master_filter = (
+        f"settb=AVTB,setpts=PTS-STARTPTS,"
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,fps={fps}:round=near"
+    )
     _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(source),
-          "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,fps={fps}",
+          "-vf", master_filter, "-fps_mode", "cfr", "-r", str(fps),
           "-c:v", "libx264", "-preset", "slow", "-crf", "16",
           "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
           "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output_path)], output_path)

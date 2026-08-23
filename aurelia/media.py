@@ -55,10 +55,30 @@ def concat_clips(clips: list[str | Path], output: str | Path) -> Path:
     if len(clips) == 1:
         _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(clips[0]), "-c", "copy", str(output_path)], output_path)
         return output_path
-    list_file = output_path.parent / f"{output_path.stem}.concat.txt"
-    list_file.write_text("\n".join(f"file '{p.resolve().as_posix()}'" for p in clips), encoding="utf-8")
-    _run(["-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(list_file),
-          "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-an", str(output_path)], output_path)
+    # Use the concat filter rather than the concat demuxer. The demuxer can
+    # preserve fractional PTS gaps at cut boundaries; later CFR mastering then
+    # fills those gaps with duplicate frames that fail production freeze QC.
+    args = ["-y", "-hide_banner", "-loglevel", "error"]
+    for clip in clips:
+        args += ["-i", str(clip)]
+    streams = []
+    graph_parts = []
+    for index in range(len(clips)):
+        label = f"v{index}"
+        graph_parts.append(
+            f"[{index}:v]settb=AVTB,setpts=PTS-STARTPTS,fps=24:round=near[{label}]"
+        )
+        streams.append(f"[{label}]")
+    graph_parts.append(
+        "".join(streams) + f"concat=n={len(clips)}:v=1:a=0,settb=AVTB,setpts=N/(24*TB)[v]"
+    )
+    args += [
+        "-filter_complex", ";".join(graph_parts), "-map", "[v]",
+        "-fps_mode", "cfr", "-r", "24", "-c:v", "libx264",
+        "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-an", str(output_path),
+    ]
+    _run(args, output_path)
     return output_path
 
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -28,38 +29,102 @@ from pathlib import Path
 _POLLINATIONS_BASE = "https://image.pollinations.ai/prompt"
 _POLLINATIONS_TIMEOUT = 90
 _API_TIMEOUT = 90
+_PROVIDER_RETRIES = 2
+
+
+class ProviderRequestError(RuntimeError):
+    """Sanitized provider failure with no credentials or response body."""
+
+
+def _read_response_bytes(
+    request: urllib.request.Request,
+    *,
+    timeout: float,
+    label: str,
+    retries: int = _PROVIDER_RETRIES,
+) -> bytes:
+    """Read a complete provider response with bounded retry and clear errors."""
+    last_error: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                expected = response.headers.get("Content-Length")
+                chunks: list[bytes] = []
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                data = b"".join(chunks)
+            if expected and len(data) != int(expected):
+                raise ProviderRequestError(
+                    f"{label}: incomplete response ({len(data)}/{expected} bytes)"
+                )
+            if not data:
+                raise ProviderRequestError(f"{label}: empty response")
+            return data
+        except (urllib.error.URLError, TimeoutError, TimeoutError, OSError, ValueError) as exc:
+            last_error = exc
+            if attempt >= retries:
+                break
+            time.sleep(min(2.0 ** attempt, 4.0))
+        except ProviderRequestError as exc:
+            last_error = exc
+            if attempt >= retries:
+                break
+            time.sleep(min(2.0 ** attempt, 4.0))
+    detail = str(last_error) if last_error else "unknown provider error"
+    raise ProviderRequestError(
+        f"{label}: failed after {retries + 1} attempts ({type(last_error).__name__}): {detail}"
+    ) from last_error
+
+
+def _write_provider_image(data: bytes, output_path: Path, *, label: str) -> bool:
+    """Validate and atomically publish a complete provider image."""
+    if len(data) < 5000:
+        raise ProviderRequestError(f"{label}: response too small ({len(data)} bytes)")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    partial = output_path.with_name(f".{output_path.name}.part")
+    try:
+        partial.unlink(missing_ok=True)
+        partial.write_bytes(data)
+        from PIL import Image
+        with Image.open(partial) as image:
+            image.verify()
+        with Image.open(partial) as image:
+            image.convert("RGB").save(partial, format="PNG", optimize=True)
+        if partial.stat().st_size < 5000:
+            raise ProviderRequestError(f"{label}: normalized image too small")
+        partial.replace(output_path)
+        return True
+    except ProviderRequestError:
+        raise
+    except Exception as exc:
+        raise ProviderRequestError(
+            f"{label}: invalid or incomplete image ({type(exc).__name__})"
+        ) from exc
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 def _via_pollinations(
     prompt: str, seed: int, width: int, height: int, output_path: Path
 ) -> bool:
-    """Pollinations.ai FLUX.1 — free, no API key. Returns True on success."""
-    try:
-        encoded = urllib.parse.quote(prompt[:400], safe="")
-        url = (
-            f"{_POLLINATIONS_BASE}/{encoded}"
-            f"?width={width}&height={height}&seed={seed % (2**31)}"
-            f"&nologo=true&model=flux&enhance=false"
-        )
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "AURELIA-Maker/2.0", "Accept": "image/*"},
-        )
-        with urllib.request.urlopen(req, timeout=_POLLINATIONS_TIMEOUT) as resp:
-            data = resp.read()
-        if len(data) < 5000:
-            return False
-        output_path.write_bytes(data)
-        # Normalize to PNG via PIL if available
-        try:
-            from PIL import Image
-            with Image.open(output_path) as img:
-                img.convert("RGB").save(output_path, format="PNG", optimize=True)
-        except Exception:
-            pass
-        return output_path.is_file() and output_path.stat().st_size > 5000
-    except Exception:
-        return False
+    """Pollinations.ai FLUX.1 with bounded, validated, atomic download."""
+    encoded = urllib.parse.quote(prompt[:400], safe="")
+    url = (
+        f"{_POLLINATIONS_BASE}/{encoded}"
+        f"?width={width}&height={height}&seed={seed % (2**31)}"
+        f"&nologo=true&model=flux&enhance=false"
+    )
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "AURELIA-Maker/2.0", "Accept": "image/*"},
+    )
+    data = _read_response_bytes(
+        request, timeout=_POLLINATIONS_TIMEOUT, label="pollinations image"
+    )
+    return _write_provider_image(data, output_path, label="pollinations image")
 
 
 def _via_together(
@@ -248,7 +313,9 @@ def generate_via_api(
                 return True, backend_name
             _log(f"[VISUAL_API] {backend_name}: empty response")
         except Exception as exc:
-            _log(f"[VISUAL_API] {backend_name}: {exc}")
+            _log(
+                f"[VISUAL_API] {backend_name}: {type(exc).__name__}: {exc}"
+            )
 
     return False, ""
 

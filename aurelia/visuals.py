@@ -103,10 +103,15 @@ class CinematicVisualEngine:
         zoom_start = max(1.0, zoom_start)
         zoom_end   = max(1.0, zoom_end)
         if abs(zoom_end - zoom_start) < 0.22:
-            # Keep calm/static direction but guarantee enough real camera
-            # travel for strict freezedetect and 10-second variation gates,
-            # including low-texture Pillow fallback frames.
-            zoom_end = zoom_start + (0.22 if zoom_end >= zoom_start else -0.22)
+            # Keep calm/static direction while staying inside zoompan's valid
+            # domain.  The old reverse branch subtracted 0.22 unconditionally;
+            # for ShotDesigner values such as 1.08 -> 1.00 this produced an
+            # endpoint below 1.0.  zoompan clamps there, creating a temporal
+            # plateau that freezedetect correctly reports as a real freeze.
+            if zoom_end >= zoom_start:
+                zoom_end = zoom_start + 0.22
+            else:
+                zoom_end = max(1.0, zoom_start - 0.22)
 
         frames      = max(1, round(duration * self.fps))
         denominator = max(frames - 1, 1)

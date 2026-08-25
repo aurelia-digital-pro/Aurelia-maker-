@@ -108,6 +108,12 @@ def test_negated_human_cues_do_not_force_portrait_environment():
     )
     assert result["environment"] != "human"
 
+    arabic_result = director.direct(
+        "scene-3-ar", "لا تظهر وجوه أو شخصيات", "تظهر خريطة ضوء هندسية في فضاء واسع.",
+        duration=8.0, scene_analysis={"emotional_register": "wonder", "preferred_shots": ["wide"]},
+    )
+    assert arabic_result["environment"] != "human"
+
 
 def test_scene_title_beats_cross_scene_substring_matches():
     director = DirectingEngine()

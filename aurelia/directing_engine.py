@@ -270,11 +270,11 @@ _MOVEMENT_POOL: dict[str, list[str]] = {
 # cue. Abstract concepts such as mind, memory, or consciousness must not
 # silently turn into a generic portrait.
 _EXPLICIT_HUMAN_CUES = {
-    "إنسان", "بشر", "طفل", "شخص", "شخصية", "وجه", "امرأة", "رجل",
+    "إنسان", "بشر", "طفل", "شخص", "شخصية", "أشخاص", "شخصيات", "وجه", "وجوه", "امرأة", "رجل",
     "human", "person", "child", "face", "woman", "man", "portrait",
 }
 _HUMAN_NEGATION_CUES = (
-    "لا يظهر", "لا يوجد", "لا توجد", "بدون", "من دون", "دون وجود",
+    "لا يظهر", "لا تظهر", "لا يوجد", "لا توجد", "لا أحد", "لا أشخاص", "لا وجوه", "بدون", "من دون", "دون وجود", "دون أشخاص",
     "no ", "without ", "not a ", "not an ",
 )
 

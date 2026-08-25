@@ -324,7 +324,15 @@ jobs:
       - name: Hard artifact verification
         run: |
           EPISODE="${{ inputs.episode_id || '0099' }}"
-          PADDED=$(printf '%04d' "${EPISODE}")
+          case "${EPISODE}" in
+            ''|*[!0-9]*) echo "Invalid episode identifier: ${EPISODE}" >&2; exit 1 ;;
+          esac
+          if [ "${#EPISODE}" -gt 4 ]; then
+            echo "Episode identifier must be at most 4 digits: ${EPISODE}" >&2
+            exit 1
+          fi
+          PADDED="${EPISODE}"
+          while [ "${#PADDED}" -lt 4 ]; do PADDED="0${PADDED}"; done
           FINAL="runs/e2e/episode-${PADDED}-FINAL.mp4"
 
           echo "Verifying: ${FINAL}"

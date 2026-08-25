@@ -22,6 +22,27 @@ from typing import Any
 
 
 CLIP_MAX_TOKENS = 77
+_ENVIRONMENT_SUBJECTS: dict[str, str] = {
+    "space": "star field, planets, orbital structures; no people",
+    "desert": "sunlit dunes, wind-shaped sand, distant horizon; no people",
+    "ocean": "open ocean, waves, horizon light, reflective water; no people",
+    "forest": "layered trees, moss, filtered sunlight, forest path; no people",
+    "mountain": "mountain ridges, rock faces, sky, atmospheric distance; no people",
+    "city": "dawn city street, architecture, windows, traffic light, skyline; no portrait subject",
+    "home": "planning room, table, papers, timeline light, instruments; no people",
+    "laboratory": "production laboratory, glass panels, monitors, instruments, controlled light; no people",
+    "battle": "wide battlefield, smoke, terrain, distant structures; no portrait subject",
+    "machine": "blue signal nodes, glass panels, circuits, instruments; no people",
+    "creature": "a clearly described non-human creature in its habitat, full body and environmental context",
+    "human": "the explicitly described person, with identity and surrounding environment grounded in the script",
+    "ancient": "ancient architecture, stone, artifacts, and a historically grounded landscape with no people",
+    "fantasy": "an enchanted landscape with luminous structures, atmospheric depth, and no people",
+    "fire": "flames, volcanic rock, smoke layers, and glowing heat with no portrait subject",
+    "dream": "surreal architecture, floating light, and layered atmosphere with no portrait subject",
+    "industry": "steel machinery, factory floor, gantries, and industrial light with no people",
+    "abstract": "a luminous abstract network of mapped signals, transparent layers, and geometric forms with no people",
+}
+
 _VISUAL_NEGATIVE_PROMPT = (
     "text, subtitles, watermark, logo, UI, blurry, distorted, duplicate subjects"
 )
@@ -272,18 +293,25 @@ def build_scene_prompt(
     continuity_parts = []
     if isinstance(continuity, dict):
         if continuity.get("environment_description"):
-            continuity_parts.append(f"same environment: {continuity['environment_description']}")
+            env_continuity = _compact_words(str(continuity["environment_description"]), 18)
+            continuity_parts.append(f"same environment: {env_continuity}")
         if continuity.get("palette"):
-            continuity_parts.append(f"same color palette: {', '.join(map(str, continuity['palette']))}")
+            palette_continuity = ", ".join(map(str, continuity["palette"][:4]))
+            continuity_parts.append(f"same color palette: {palette_continuity}")
         if continuity.get("lighting_key"):
             continuity_parts.append(f"same lighting key: {continuity['lighting_key']}")
         anchors = continuity.get("character_anchors") or {}
         if anchors:
-            continuity_parts.append("same character anchors: " + "; ".join(f"{k}={v}" for k, v in anchors.items()))
+            anchor_text = "; ".join(
+                f"{_compact_words(str(k), 4)}={_compact_words(str(v), 8)}"
+                for k, v in list(anchors.items())[:3]
+            )
+            continuity_parts.append("same character anchors: " + anchor_text)
     continuity_hint = "; ".join(continuity_parts)
     palette = direction.get("visual_palette") or []
     palette_hint = ", ".join(str(value) for value in palette[:4])
     shot_visual_note = str(direction.get("shot_visual_note", "")).strip()
+    environment_subject = _ENVIRONMENT_SUBJECTS.get(environment, _ENVIRONMENT_SUBJECTS["abstract"])
     human_required = environment == "human"
     subject_guard = (
         ""
@@ -305,14 +333,15 @@ def build_scene_prompt(
     prompt = (
         f"photorealistic cinematic film still, {environment} setting; "
         + subject_guard
-        + f"subject: {concise_title}, {concise_description}; "
+        + (f"{continuity_hint}; " if continuity_hint else "")
+        + f"visible subject: {environment_subject}; "
+        + f"story content: {concise_title}, {concise_description}; "
         + (f"shot detail: {shot_visual_note}; " if shot_visual_note else "")
         + f"{composition}; {framing} shot, {lens}mm lens, {movement} camera, depth of field {dof:.1f}; "
         f"treatment {cinematic_treatment}, depth mode {depth_mode}, "
         f"focus behavior {focus_behavior}, atmosphere {atmosphere_mode}; "
         f"lighting {key_color}, haze {haze:.1f}; "
         + (f"color palette: {palette_hint}; " if palette_hint else "")
-        + (f"{continuity_hint}; " if continuity_hint else "")
         + "no text, no subtitles, no watermark, high quality"
     )
     words = prompt.split()

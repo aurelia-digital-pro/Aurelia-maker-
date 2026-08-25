@@ -216,8 +216,8 @@ jobs:
           from pathlib import Path
 
           ROOT = Path('.')
-          episode_id = os.environ.get('ACCEPTANCE_EPISODE', '0001').strip().zfill(4)
-          script_path = ROOT / os.environ.get('ACCEPTANCE_SCRIPT', 'scripts/episode-0001-arabic-test.txt')
+          episode_id = os.environ.get('ACCEPTANCE_EPISODE', '0099').strip().zfill(4)
+          script_path = ROOT / os.environ.get('ACCEPTANCE_SCRIPT', 'scripts/aurelia-maker-introduction-ar.txt')
 
           assert script_path.is_file(), f'Script not found: {script_path}'
           source_text = script_path.read_text(encoding='utf-8').strip()
@@ -323,7 +323,7 @@ jobs:
 
       - name: Hard artifact verification
         run: |
-          EPISODE="${{ inputs.episode_id || '0001' }}"
+          EPISODE="${{ inputs.episode_id || '0099' }}"
           PADDED=$(printf '%04d' "${EPISODE}")
           FINAL="runs/e2e/episode-${PADDED}-FINAL.mp4"
 

@@ -86,6 +86,7 @@ def _build_production_manifest(
     with only delivery metadata. Keep both full QC results here so proof
     generation can verify the same gate that accepted the final MP4.
     """
+    production_root = Path(getattr(production, "root", ""))
     return {
         "job_id":   job.job_id,
         "episode_id": job.episode_id,
@@ -97,6 +98,7 @@ def _build_production_manifest(
         "source_text_sha256": source_text_sha256,
         "outputs":  {k: str(v) for k, v in final_outputs.items()},
         "sound_design_path": str(sound_design) if sound_design else None,
+        "subtitle_path": str(production_root / f"episode-{job.episode_id}.srt"),
         "music_provenance": dict(getattr(production, "music_provenance", {})),
         "ambient_provenance": dict(getattr(production, "ambient_provenance", {})),
         "audio_provenance": dict(getattr(production, "audio_provenance", {})),

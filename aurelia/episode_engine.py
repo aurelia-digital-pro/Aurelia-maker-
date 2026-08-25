@@ -752,6 +752,7 @@ class EpisodeProduction:
             "qc":               qc,
             "visual_qc":        visual_qc,
             "audio_quality":    dict(qc.get("audio_quality", {})),
+            "subtitle_path":    str(srt_path),
             "audio_provenance": dict(self.audio_provenance),
             "music_provenance": dict(self.music_provenance),
             "ambient_provenance": dict(self.ambient_provenance),

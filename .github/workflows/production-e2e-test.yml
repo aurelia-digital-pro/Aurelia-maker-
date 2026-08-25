@@ -266,6 +266,8 @@ jobs:
           manifest = json.loads(manifests[0].read_text(encoding='utf-8'))
           audio_provenance = manifest.get('audio_provenance', {})
           audio_quality = manifest.get('audio_quality', {})
+          subtitle_path = Path(manifest.get('subtitle_path', ''))
+          assert subtitle_path.is_file() and subtitle_path.stat().st_size > 10, subtitle_path
           assert audio_provenance.get('provider') == 'edge-tts', audio_provenance
           assert audio_provenance.get('fallback') is False, audio_provenance
           assert audio_quality.get('passed') is True, audio_quality
@@ -306,6 +308,7 @@ jobs:
               'frame_diversity': len(set(frame_hashes)),
               'audio_provenance': audio_provenance,
               'audio_quality': audio_quality,
+              'subtitle_path': str(subtitle_path),
           }
           proof_path = ROOT / 'runs' / 'e2e' / 'production_proof.json'
           proof_path.write_text(json.dumps(proof, indent=2, ensure_ascii=False), encoding='utf-8')
@@ -362,6 +365,8 @@ jobs:
           music_provenance = manifest.get('music_provenance', {})
           ambient_provenance = manifest.get('ambient_provenance', {})
           audio_quality = manifest.get('audio_quality', {})
+          subtitle_path = Path(manifest.get('subtitle_path', ''))
+          assert subtitle_path.is_file() and subtitle_path.stat().st_size > 10, subtitle_path
           backends = [str(value) for value in visual.get('backends_used', [])]
           assert proof['accepted'] is True
           assert qc['delivery_blocked'] is False
@@ -415,6 +420,7 @@ jobs:
           | Integrated loudness | `{audio_quality.get('integrated_lufs', '')} LUFS` |
           | True peak | `{audio_quality.get('true_peak_dbfs', '')} dBFS` |
           | Sample clipping | `{audio_quality.get('sample_clipping_detected', True)}` |
+          | Subtitle artifact | `{subtitle_path}` |
 
           ## MP4 QC checks
 
@@ -446,6 +452,7 @@ jobs:
             runs/e2e/output/**/master/*.mp4
             runs/e2e/output/**/delivery/*.mp4
             runs/e2e/output/**/audio/*.wav
+            runs/e2e/output/**/episode-*.srt
             runs/e2e/output/**/factory/stage_artifacts/*.json
             PRODUCTION_PROOF.md
           retention-days: 30

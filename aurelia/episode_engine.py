@@ -187,7 +187,7 @@ class EpisodeProduction:
             direction = self.director.direct(
                 scene_id=scene_id, title=raw_scene["title"],
                 text=raw_scene["text"], duration=estimated_duration,
-                scene_index=index,
+                scene_index=index, scene_analysis=analysis.to_dict(),
             )
             shot_specs = self._shot_designer.design(analysis, estimated_duration)
             shot_summary = ", ".join(
@@ -253,11 +253,16 @@ class EpisodeProduction:
 
         for scene in self.scenes:
             env = scene.direction.get("environment", "abstract")
+            analysis_data = scene.analysis or {}
             lighting_key = str(((scene.direction.get("lighting") or {}).get("key") or {}).get("color", "neutral"))
             palette = list(scene.direction.get("visual_palette") or [str(env), lighting_key, "cinematic shadow"])
-            for character in (scene.analysis or {}).get("characters", []) or []:
-                name = str(character)
-                continuity_anchors.setdefault(name, f"recurring subject associated with {env} environment")
+            subject = str(analysis_data.get("primary_subject", "")).strip()
+            continuity_tags = set(analysis_data.get("continuity_tags", []) or [])
+            if subject and (env == "human" or "character_continuity" in continuity_tags):
+                continuity_anchors.setdefault(
+                    subject,
+                    f"recurring subject associated with {env} environment",
+                )
             context = ContinuityContext(
                 palette=palette,
                 environment_description=str(scene.direction.get("environment_description") or f"{env} cinematic environment"),
@@ -304,8 +309,12 @@ class EpisodeProduction:
                     path = self.dirs["visuals"] / (
                         f"scene_{scene.index + 1:02d}_shot_{shot_idx:02d}.png"
                     )
+                    analysis_data = scene.analysis or {}
                     visual_note = " ".join(filter(None, [
                         shot.get("description", ""),
+                        f"subject {analysis_data.get('primary_subject', '')}",
+                        f"objective {analysis_data.get('visual_objective', '')}",
+                        f"purpose {shot.get('narrative_purpose', analysis_data.get('scene_purpose', ''))}",
                         shot.get("framing", ""),
                         shot.get("motion_intent", ""),
                     ]))
@@ -336,6 +345,8 @@ class EpisodeProduction:
                     shot_direction["cinematic_treatment"] = shot.get("cinematic_treatment", "depth_push")
                     shot_direction["focus_behavior"] = shot.get("focus_behavior", "deep_focus")
                     shot_direction["atmosphere_mode"] = shot.get("atmosphere_mode", "none")
+                    shot_direction["shot_visual_note"] = visual_note
+                    shot_direction["subject_detail"] = str(analysis_data.get("primary_subject", ""))
                     shot_direction["continuity"] = context.to_dict()
 
                     if checkpoint.is_done(scene.index, shot_idx, path):
@@ -469,15 +480,32 @@ class EpisodeProduction:
             words = full_text.split()
             chunks: list[str] = []
             current: list[str] = []
+            # Keep cues readable on a 16:9 frame. The burn-in style also has
+            # explicit safe-area margins, so this bound prevents long Arabic
+            # cues from becoming a four-line block over the subject.
             for word in words:
                 candidate = " ".join([*current, word])
-                if current and len(candidate) > 120:
+                if current and len(candidate) > 76:
                     chunks.append(" ".join(current))
                     current = [word]
                 else:
                     current.append(word)
             if current:
                 chunks.append(" ".join(current))
+
+            def wrap_display_text(chunk: str, max_chars: int = 42) -> str:
+                display_lines: list[str] = []
+                line_words: list[str] = []
+                for word in chunk.split():
+                    candidate = " ".join([*line_words, word])
+                    if line_words and len(candidate) > max_chars:
+                        display_lines.append(" ".join(line_words))
+                        line_words = [word]
+                    else:
+                        line_words.append(word)
+                if line_words:
+                    display_lines.append(" ".join(line_words))
+                return "\n".join(display_lines[:2])
 
             total_chars = max(sum(len(chunk) for chunk in chunks), 1)
             cue_cursor = cursor
@@ -489,7 +517,7 @@ class EpisodeProduction:
                 lines.extend([
                     str(cue_index),
                     f"{fmt(cue_cursor)} --> {fmt(cue_end)}",
-                    chunk,
+                    wrap_display_text(chunk),
                     "",
                 ])
                 cue_index += 1
@@ -536,17 +564,31 @@ class EpisodeProduction:
             lighting_plan = direction.get("lighting", {})
             environment   = direction.get("environment", "abstract")
 
+            analysis_data = scene.analysis or {}
+            emotion = str(analysis_data.get("emotional_register", "neutral"))
             if environment in _HIGH_SAT_ENVS:
-                saturation = 1.12
+                saturation = 1.10
             elif environment in _LOW_SAT_ENVS:
-                saturation = 0.95
+                saturation = 0.98
             else:
-                saturation = 1.05
+                saturation = 1.03
+            saturation += {
+                "joyful": 0.10,
+                "awe": 0.07,
+                "wonder": 0.05,
+                "tense": 0.02,
+                "dread": -0.10,
+                "melancholic": -0.14,
+                "calm": -0.02,
+            }.get(emotion, 0.0)
+            saturation = min(1.22, max(0.78, saturation))
 
             key  = (lighting_plan.get("key")  or {})
             fill = (lighting_plan.get("fill") or {})
-            brightness = 1.0 + min(float(key.get("intensity",  0.7)) * 0.04, 0.06)
-            contrast   = 1.04 + min(float(fill.get("intensity", 0.2)) * 0.04, 0.03)
+            brightness = 1.0 + min(float(key.get("intensity", 0.7)) * 0.04, 0.06)
+            brightness += {"joyful": 0.025, "awe": 0.015, "dread": -0.025, "melancholic": -0.02}.get(emotion, 0.0)
+            contrast = 1.04 + min(float(fill.get("intensity", 0.2)) * 0.04, 0.03)
+            contrast += {"tense": 0.05, "dread": 0.06, "melancholic": 0.01, "calm": -0.02}.get(emotion, 0.0)
             atm = lighting_plan.get("atmosphere") or {}
             atm_haze = float(atm.get("haze", 0.0))
             atm_fog  = float(atm.get("fog",  0.0))
@@ -594,6 +636,9 @@ class EpisodeProduction:
                     "depth_mode": depth_mode,
                     "focus_behavior": shot_dict.get("focus_behavior", "deep_focus"),
                     "atmosphere_mode": shot_dict.get("atmosphere_mode", "none"),
+                    "environment": environment,
+                    "emotion": emotion,
+                    "visual_palette": list(direction.get("visual_palette") or []),
                     "depth_artifact": str(depth_artifact),
                     "parallax_strength": parallax_strength,
                 })

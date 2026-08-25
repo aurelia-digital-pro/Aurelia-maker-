@@ -281,6 +281,15 @@ def build_scene_prompt(
         if anchors:
             continuity_parts.append("same character anchors: " + "; ".join(f"{k}={v}" for k, v in anchors.items()))
     continuity_hint = "; ".join(continuity_parts)
+    palette = direction.get("visual_palette") or []
+    palette_hint = ", ".join(str(value) for value in palette[:4])
+    shot_visual_note = str(direction.get("shot_visual_note", "")).strip()
+    human_required = environment == "human"
+    subject_guard = (
+        ""
+        if human_required
+        else "no generic portrait, no unrelated people, no arbitrary female subject; "
+    )
     composition = {
         "establishing": "environmental establishing composition, architecture and location dominant, subject small in frame",
         "action": "dynamic action composition, visible spatial context and gesture",
@@ -294,12 +303,15 @@ def build_scene_prompt(
     concise_title = _compact_words(title, 5)
     concise_description = _compact_words(description, 10)
     prompt = (
-        f"photorealistic cinematic film still, {environment} setting, "
-        f"subject: {concise_title}, {concise_description}; "
-        f"{composition}; {framing} shot, {lens}mm lens, {movement} camera, depth of field {dof:.1f}; "
+        f"photorealistic cinematic film still, {environment} setting; "
+        + subject_guard
+        + f"subject: {concise_title}, {concise_description}; "
+        + (f"shot detail: {shot_visual_note}; " if shot_visual_note else "")
+        + f"{composition}; {framing} shot, {lens}mm lens, {movement} camera, depth of field {dof:.1f}; "
         f"treatment {cinematic_treatment}, depth mode {depth_mode}, "
         f"focus behavior {focus_behavior}, atmosphere {atmosphere_mode}; "
         f"lighting {key_color}, haze {haze:.1f}; "
+        + (f"color palette: {palette_hint}; " if palette_hint else "")
         + (f"{continuity_hint}; " if continuity_hint else "")
         + "no text, no subtitles, no watermark, high quality"
     )

@@ -4,6 +4,8 @@ import subprocess
 from PIL import Image, ImageDraw
 
 from aurelia.depth import DEPTH_METHOD, build_depth_map
+from aurelia.directing_engine import DirectingEngine
+from aurelia.episode_engine import EpisodeProduction, ScenePlan
 from aurelia.scene_analyzer import SceneAnalyzer
 from aurelia.shot_designer import ShotDesigner
 from aurelia.visuals import CinematicVisualEngine
@@ -79,6 +81,77 @@ def test_parallax_treatment_renders_depth_artifact_without_freeze(tmp_path: Path
     )
     assert result.returncode == 0
     assert "freeze_duration" not in result.stderr
+
+
+def test_directing_uses_content_specific_environment_and_palette():
+    director = DirectingEngine()
+    concept = director.direct(
+        "scene-1", "The Algorithm", "An abstract algorithm maps signals into a visual network.",
+        duration=8.0, scene_analysis={"emotional_register": "wonder", "preferred_shots": ["wide"]},
+    )
+    person = director.direct(
+        "scene-2", "The Researcher", "A woman stands alone beside a window.",
+        duration=8.0, scene_analysis={"emotional_register": "calm", "preferred_shots": ["medium"]},
+    )
+    assert concept["environment"] in {"abstract", "machine"}
+    assert concept["environment"] != "human"
+    assert "algorithm" in concept["environment_description"]
+    assert len(concept["visual_palette"]) >= 3
+    assert person["environment"] == "human"
+
+
+def test_episode_scene_plan_passes_analysis_to_directing(tmp_path):
+    script = tmp_path / "script.txt"
+    script.write_text("Title: Content direction\nLanguage: en\nbody", encoding="utf-8")
+    production = EpisodeProduction("0002", tmp_path / "episode", script)
+    scenes = production.build_scene_plan(
+        "An algorithm maps signals across a technical network.\n\n"
+        "A mountain archive preserves a quiet historical memory.\n\n"
+        "A river at dawn reflects a hopeful future."
+    )
+    assert scenes
+    assert all(scene.direction.get("visual_palette") for scene in scenes)
+    assert all(scene.direction.get("environment_description") for scene in scenes)
+    assert all(scene.analysis.get("visual_objective") for scene in scenes)
+
+
+def test_scene_prompt_keeps_shot_detail_and_blocks_generic_people():
+    from aurelia.ai_visual import build_scene_prompt
+
+    prompt = build_scene_prompt(
+        "Network", "A signal map links distant instruments.",
+        {
+            "environment": "machine",
+            "shot_visual_note": "red bridge over a frozen river, wide establishing reveal",
+            "visual_palette": ["graphite", "electric cyan"],
+            "cinematic_treatment": "layered_reveal",
+            "depth_mode": "parallax",
+        },
+    )
+    assert "red bridge" in prompt
+    assert "no generic portrait" in prompt
+    assert "layered_reveal" in prompt
+
+
+def test_subtitles_wrap_to_restrained_lines_without_losing_words(tmp_path, monkeypatch):
+    script = tmp_path / "script.txt"
+    script.write_text("Title: Safe captions\nLanguage: ar\nbody", encoding="utf-8")
+    production = EpisodeProduction("0001", tmp_path / "episode", script, language="ar")
+    production.scenes = [ScenePlan(
+        index=0,
+        title="Scene",
+        text="هذه جملة عربية طويلة تشرح كيف يتحول المعنى إلى صورة واضحة داخل المشهد السينمائي دون أن تحجب الترجمة الموضوع أو التفاصيل المهمة.",
+        duration=10.0,
+    )]
+    monkeypatch.setattr("aurelia.episode_engine.probe_duration", lambda _path: 10.0)
+    srt = production.build_subtitles(tmp_path / "narration.wav")
+    blocks = [block for block in srt.read_text(encoding="utf-8").split("\n\n") if block.strip()]
+    text_lines = [line for block in blocks for line in block.splitlines()[2:]]
+    assert text_lines
+    assert max(len(line) for line in text_lines) <= 42
+    flattened = " ".join(text_lines).replace("  ", " ")
+    assert "المعنى" in flattened
+    assert "التفاصيل" in flattened
 
 
 def test_scene_prompt_preserves_content_and_treatment_without_continuity():

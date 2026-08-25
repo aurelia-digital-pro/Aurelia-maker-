@@ -252,15 +252,18 @@ def generate_visual(
     guidance = float(img_cfg.get("guidance_scale", 7.5))
     neg_p    = img_cfg.get("negative_prompt", "")
 
-    # Build cinematic prompt
+    # Build cinematic prompt. Put the shot-specific note inside the structured
+    # direction before token limiting; appending it afterward made the most
+    # important per-shot subject/camera detail easy to truncate or ignore.
+    prompt_direction = dict(direction or {})
+    if visual_note:
+        prompt_direction["shot_visual_note"] = visual_note
     try:
         from .ai_visual import build_scene_prompt
-        prompt = build_scene_prompt(title, text, direction)
+        prompt = build_scene_prompt(title, text, prompt_direction)
     except Exception:
-        env = (direction or {}).get("environment", "abstract")
+        env = prompt_direction.get("environment", "abstract")
         prompt = f"cinematic film still, {env} setting, {title}: {text}"
-    if visual_note:
-        prompt = f"{prompt}, {visual_note}"
 
     seed_str = f"{title}|{text}|{visual_note}|{run_id}"
     seed = int(hashlib.md5(seed_str.encode()).hexdigest()[:8], 16)

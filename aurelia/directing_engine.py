@@ -265,6 +265,44 @@ _MOVEMENT_POOL: dict[str, list[str]] = {
 }
 
 
+# Human imagery is allowed only when the script contains an explicit person
+# cue. Abstract concepts such as mind, memory, or consciousness must not
+# silently turn into a generic portrait.
+_EXPLICIT_HUMAN_CUES = {
+    "إنسان", "بشر", "طفل", "شخص", "شخصية", "وجه", "امرأة", "رجل",
+    "human", "person", "child", "face", "woman", "man", "portrait",
+}
+
+_PALETTES_BY_ENVIRONMENT: dict[str, list[str]] = {
+    "space": ["deep indigo", "orbital cyan", "starlight gold"],
+    "desert": ["sun-baked ochre", "sandstone", "amber haze"],
+    "ocean": ["marine blue", "sea-glass cyan", "silver foam"],
+    "forest": ["moss green", "filtered gold", "deep pine"],
+    "mountain": ["slate blue", "snow white", "alpine gold"],
+    "city": ["cobalt dusk", "neon amber", "concrete gray"],
+    "home": ["warm ivory", "wood brown", "window gold"],
+    "laboratory": ["cool white", "glass blue", "technical teal"],
+    "battle": ["iron gray", "ember orange", "smoke black"],
+    "machine": ["graphite", "electric cyan", "signal teal"],
+    "ancient": ["faded limestone", "earth red", "antique gold"],
+    "fantasy": ["amethyst", "moonlit cyan", "glowing mint"],
+    "fire": ["charcoal", "molten orange", "ember red"],
+    "dream": ["violet dusk", "soft cyan", "pearl white"],
+    "industry": ["steel blue", "safety amber", "oxide red"],
+    "abstract": ["ink navy", "copper light", "transparent blue"],
+}
+
+_EMOTION_PALETTE_ACCENTS = {
+    "joyful": "luminous warm accents",
+    "awe": "expanded luminous highlights",
+    "wonder": "curious cyan highlights",
+    "tense": "compressed contrast and red-orange accents",
+    "dread": "cool shadow and restrained crimson accents",
+    "melancholic": "muted blue-gray and soft silver",
+    "calm": "quiet natural saturation",
+}
+
+
 class DirectingEngine:
     """Derive a stable, content-driven cinematic plan from scene semantics.
 
@@ -276,14 +314,39 @@ class DirectingEngine:
     when ShotDesigner is unavailable. ShotDesigner owns per-shot motion.
     """
 
-    def classify(self, title: str, text: str) -> str:
+    def classify(
+        self,
+        title: str,
+        text: str,
+        scene_analysis: dict[str, Any] | None = None,
+    ) -> str:
         haystack = f"{title} {text}".casefold()
         scores = {
             name: sum(1 for kw in spec["keywords"] if kw.casefold() in haystack)
             for name, spec in ENVIRONMENTS.items()
         }
+        # Do not let broad conceptual terms (mind, memory, language) select a
+        # generic portrait. A human environment requires an explicit person cue.
+        explicit_human = any(cue.casefold() in haystack for cue in _EXPLICIT_HUMAN_CUES)
+        if not explicit_human:
+            scores["human"] = 0
         best = max(scores, key=scores.get)
         return best if scores[best] > 0 else "abstract"
+
+    @staticmethod
+    def _environment_description(environment: str, text: str) -> str:
+        content = " ".join(text.split())
+        if len(content) > 180:
+            content = content[:177].rsplit(" ", 1)[0] + "..."
+        return f"{environment} setting grounded in the described action: {content}"
+
+    @staticmethod
+    def _visual_palette(environment: str, emotion: str) -> list[str]:
+        palette = list(_PALETTES_BY_ENVIRONMENT.get(environment, _PALETTES_BY_ENVIRONMENT["abstract"]))
+        accent = _EMOTION_PALETTE_ACCENTS.get(emotion)
+        if accent:
+            palette.append(accent)
+        return palette
 
     def _pick_movement(self, environment: str, scene_index: int) -> str:
         """LEGACY FALLBACK movement selection — used only when ShotDesigner is absent."""
@@ -305,7 +368,7 @@ class DirectingEngine:
         When provided, preferred_shots[0] is used as the advisory movement;
         otherwise legacy _MOVEMENT_POOL is used.
         """
-        environment = self.classify(title, text)
+        environment = self.classify(title, text, scene_analysis)
         spec = ENVIRONMENTS[environment]
 
         # Movement: advisory only — ShotDesigner overrides at shot level
@@ -326,6 +389,10 @@ class DirectingEngine:
             movement = shot_to_motion.get(first_shot, self._pick_movement(environment, scene_index))
         else:
             movement = self._pick_movement(environment, scene_index)
+
+        emotion = str((scene_analysis or {}).get("emotional_register", "neutral"))
+        visual_palette = self._visual_palette(environment, emotion)
+        environment_description = self._environment_description(environment, text)
 
         camera = CameraPlan(
             shot_id=scene_id,
@@ -378,6 +445,8 @@ class DirectingEngine:
 
         return {
             "environment": environment,
+            "environment_description": environment_description,
+            "visual_palette": visual_palette,
             "camera":      asdict(camera),
             "depth":       asdict(depth),
             "motion":      asdict(motion),

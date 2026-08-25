@@ -279,7 +279,7 @@ def mix_narration_and_music(
 
 def apply_color_grade(
     source: str | Path, output: str | Path,
-    contrast: float = 1.08, saturation: float = 1.12, brightness: float = -0.02
+    contrast: float = 1.04, saturation: float = 1.03, brightness: float = -0.01
 ) -> Path:
     source = _require_file(source, "Color-grade source")
     output_path = Path(output)
@@ -341,8 +341,10 @@ def burn_subtitles(source: str | Path, srt: str | Path, output: str | Path) -> P
 
     subtitle_filter = (
         f"subtitles=filename='{escaped_srt}':"
-        f"force_style='FontSize=28,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,"
-        f"Outline=2,MarginV=40,Bold=1{font_style}'"
+        f"force_style='FontSize=22,PrimaryColour=&H00FFFFFF,"
+        f"OutlineColour=&H00101010,BackColour=&H66000000,BorderStyle=1,"
+        f"Outline=1,Shadow=1,Alignment=2,MarginL=180,MarginR=180,MarginV=72,"
+        f"Bold=0,Spacing=0,WrapStyle=2{font_style}'"
     )
     result = run_ffmpeg(["-y", "-hide_banner", "-loglevel", "error",
                          "-i", str(source), "-vf", subtitle_filter,

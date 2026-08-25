@@ -100,7 +100,7 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
     },
     "home": {
         "keywords": [
-            "منزل", "بيت", "غرفة", "داخل", "أسرة", "عائلة", "مطبخ",
+            "منزل", "بيت", "غرفة", "أسرة", "عائلة", "مطبخ",
             "home", "house", "room", "interior", "family", "living room",
             "kitchen", "bedroom", "indoor", "domestic",
         ],
@@ -272,6 +272,26 @@ _EXPLICIT_HUMAN_CUES = {
     "إنسان", "بشر", "طفل", "شخص", "شخصية", "وجه", "امرأة", "رجل",
     "human", "person", "child", "face", "woman", "man", "portrait",
 }
+_HUMAN_NEGATION_CUES = (
+    "لا يظهر", "لا يوجد", "لا توجد", "بدون", "من دون", "دون وجود",
+    "no ", "without ", "not a ", "not an ",
+)
+
+
+def _has_explicit_human_cue(haystack: str) -> bool:
+    """Return true only for a person cue that is not locally negated."""
+    for cue in _EXPLICIT_HUMAN_CUES:
+        start = 0
+        cue_folded = cue.casefold()
+        while True:
+            position = haystack.find(cue_folded, start)
+            if position < 0:
+                break
+            context = haystack[max(0, position - 32):position]
+            if not any(negation in context for negation in _HUMAN_NEGATION_CUES):
+                return True
+            start = position + len(cue_folded)
+    return False
 
 _PALETTES_BY_ENVIRONMENT: dict[str, list[str]] = {
     "space": ["deep indigo", "orbital cyan", "starlight gold"],
@@ -327,7 +347,7 @@ class DirectingEngine:
         }
         # Do not let broad conceptual terms (mind, memory, language) select a
         # generic portrait. A human environment requires an explicit person cue.
-        explicit_human = any(cue.casefold() in haystack for cue in _EXPLICIT_HUMAN_CUES)
+        explicit_human = _has_explicit_human_cue(haystack)
         if not explicit_human:
             scores["human"] = 0
         best = max(scores, key=scores.get)

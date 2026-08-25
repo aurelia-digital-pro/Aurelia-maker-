@@ -6,12 +6,12 @@ on:
       episode_id:
         description: "4-digit episode ID (e.g. 0001)"
         required: false
-        default: "0089"
+        default: "0099"
         type: string
       script_path:
-        description: "Path to script file (default: scripts/episode-0089-acceptance.txt)"
+        description: "Path to representative AURELIA Maker introduction script"
         required: false
-        default: "scripts/episode-0089-acceptance.txt"
+        default: "scripts/aurelia-maker-introduction-ar.txt"
         type: string
       language:
         description: "Language (ar or en)"
@@ -199,8 +199,8 @@ jobs:
 
       - name: Run FULL end-to-end production test
         env:
-          ACCEPTANCE_EPISODE: ${{ inputs.episode_id || '0001' }}
-          ACCEPTANCE_SCRIPT: ${{ inputs.script_path || 'scripts/episode-0001-arabic-test.txt' }}
+          ACCEPTANCE_EPISODE: ${{ inputs.episode_id || '0099' }}
+          ACCEPTANCE_SCRIPT: ${{ inputs.script_path || 'scripts/aurelia-maker-introduction-ar.txt' }}
         run: |
           set -o pipefail
           echo "[E2E] Episode: ${ACCEPTANCE_EPISODE}"
@@ -266,6 +266,9 @@ jobs:
           manifest = json.loads(manifests[0].read_text(encoding='utf-8'))
           audio_provenance = manifest.get('audio_provenance', {})
           audio_quality = manifest.get('audio_quality', {})
+          cinematic_treatments = manifest.get('cinematic_treatments', [])
+          assert cinematic_treatments, 'No cinematic treatment records were persisted'
+          assert all(Path(item.get('depth_artifact', '')).is_file() for item in cinematic_treatments), cinematic_treatments
           subtitle_path = Path(manifest.get('subtitle_path', ''))
           assert subtitle_path.is_file() and subtitle_path.stat().st_size > 10, subtitle_path
           assert audio_provenance.get('provider') == 'edge-tts', audio_provenance
@@ -309,6 +312,8 @@ jobs:
               'audio_provenance': audio_provenance,
               'audio_quality': audio_quality,
               'subtitle_path': str(subtitle_path),
+              'cinematic_treatment_count': len(cinematic_treatments),
+              'cinematic_treatments': cinematic_treatments,
           }
           proof_path = ROOT / 'runs' / 'e2e' / 'production_proof.json'
           proof_path.write_text(json.dumps(proof, indent=2, ensure_ascii=False), encoding='utf-8')
@@ -365,6 +370,9 @@ jobs:
           music_provenance = manifest.get('music_provenance', {})
           ambient_provenance = manifest.get('ambient_provenance', {})
           audio_quality = manifest.get('audio_quality', {})
+          cinematic_treatments = manifest.get('cinematic_treatments', [])
+          assert cinematic_treatments, 'No cinematic treatment records were persisted'
+          assert all(Path(item.get('depth_artifact', '')).is_file() for item in cinematic_treatments), cinematic_treatments
           subtitle_path = Path(manifest.get('subtitle_path', ''))
           assert subtitle_path.is_file() and subtitle_path.stat().st_size > 10, subtitle_path
           backends = [str(value) for value in visual.get('backends_used', [])]
@@ -421,6 +429,8 @@ jobs:
           | True peak | `{audio_quality.get('true_peak_dbfs', '')} dBFS` |
           | Sample clipping | `{audio_quality.get('sample_clipping_detected', True)}` |
           | Subtitle artifact | `{subtitle_path}` |
+          | Cinematic treatment count | `{len(cinematic_treatments)}` |
+          | Depth artifacts | `{sum(Path(item.get('depth_artifact', '')).is_file() for item in cinematic_treatments)}` |
 
           ## MP4 QC checks
 
@@ -453,6 +463,7 @@ jobs:
             runs/e2e/output/**/delivery/*.mp4
             runs/e2e/output/**/audio/*.wav
             runs/e2e/output/**/episode-*.srt
+            runs/e2e/output/**/depth/*.png
             runs/e2e/output/**/factory/stage_artifacts/*.json
             PRODUCTION_PROOF.md
           retention-days: 30

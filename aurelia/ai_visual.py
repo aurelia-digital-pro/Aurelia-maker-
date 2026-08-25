@@ -264,6 +264,10 @@ def build_scene_prompt(
     key_color = key.get("color") or "neutral"
     haze = atmosphere.get("haze") or 0.0
     shot_function = str(direction.get("shot_function", "coverage"))
+    cinematic_treatment = str(direction.get("cinematic_treatment", "depth_push"))
+    depth_mode = str(direction.get("depth_mode", depth.get("mode", "none")))
+    focus_behavior = str(direction.get("focus_behavior", "deep_focus"))
+    atmosphere_mode = str(direction.get("atmosphere_mode", "none"))
     continuity = direction.get("continuity") or {}
     continuity_parts = []
     if isinstance(continuity, dict):
@@ -293,9 +297,11 @@ def build_scene_prompt(
         f"photorealistic cinematic film still, {environment} setting, "
         f"subject: {concise_title}, {concise_description}; "
         f"{composition}; {framing} shot, {lens}mm lens, {movement} camera, depth of field {dof:.1f}; "
+        f"treatment {cinematic_treatment}, depth mode {depth_mode}, "
+        f"focus behavior {focus_behavior}, atmosphere {atmosphere_mode}; "
         f"lighting {key_color}, haze {haze:.1f}; "
-        f"{continuity_hint}; " if continuity_hint else ""
-        "no text, no subtitles, no watermark, high quality"
+        + (f"{continuity_hint}; " if continuity_hint else "")
+        + "no text, no subtitles, no watermark, high quality"
     )
     words = prompt.split()
     if len(words) > CLIP_MAX_TOKENS - 5:

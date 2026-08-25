@@ -81,6 +81,11 @@ class ShotSpec:
     transition_out: str      # cut / dissolve / fade
     visual_note: str         # short description for image generation enrichment
     depth_of_field: float    # 0.0 (infinite) to 1.0 (very shallow bokeh)
+    cinematic_treatment: str = "depth_push"
+    depth_mode: str = "parallax"
+    focus_behavior: str = "deep_focus"
+    atmosphere_mode: str = "none"
+    narrative_purpose: str = ""
     is_first: bool = False
     is_last: bool = False
 
@@ -98,6 +103,11 @@ class ShotSpec:
             "transition_out": self.transition_out,
             "visual_note": self.visual_note,
             "depth_of_field": self.depth_of_field,
+            "cinematic_treatment": self.cinematic_treatment,
+            "depth_mode": self.depth_mode,
+            "focus_behavior": self.focus_behavior,
+            "atmosphere_mode": self.atmosphere_mode,
+            "narrative_purpose": self.narrative_purpose,
             "is_first": self.is_first,
             "is_last": self.is_last,
         }
@@ -222,6 +232,10 @@ class ShotDesigner:
                 dof = min(1.0, dof + 0.15)
 
             zoom_start, zoom_end = self._zoom_range(motion, magnitude)
+            treatment = self._cinematic_treatment(analysis, str(tmpl["function"]), motion)
+            depth_mode = self._depth_mode(treatment, dof)
+            focus_behavior = self._focus_behavior(str(tmpl["framing"]), dof, treatment)
+            atmosphere_mode = self._atmosphere_mode(analysis, treatment)
 
             transition_in = self._transition_in(i, analysis)
             transition_out = self._transition_out(i, len(templates), analysis)
@@ -240,6 +254,11 @@ class ShotDesigner:
                 transition_out=transition_out,
                 visual_note=visual_note,
                 depth_of_field=dof,
+                cinematic_treatment=treatment,
+                depth_mode=depth_mode,
+                focus_behavior=focus_behavior,
+                atmosphere_mode=atmosphere_mode,
+                narrative_purpose=analysis.scene_purpose,
                 is_first=(i == 0),
                 is_last=(i == len(templates) - 1),
             ))
@@ -282,6 +301,49 @@ class ShotDesigner:
             return 1.0, 1.0 + delta * 0.10
         # push_in, dolly_in, slow_push
         return 1.0, 1.0 + delta
+
+    def _cinematic_treatment(self, a: SceneAnalysis, function: str, motion: str) -> str:
+        """Select a shot treatment from semantics, not from a global style.
+
+        The treatment is intentionally orthogonal to the motion intent: a
+        tracking shot can use subject_follow, while a slow drift can use
+        atmospheric_drift. This gives the renderer enough information to
+        combine camera, depth, light, and atmosphere per shot.
+        """
+        if a.action_level >= 0.70 or function in {"development", "reaction"} and a.emotional_register == "tense":
+            return "subject_follow"
+        if function in {"establishing", "transition"} and a.emotional_register in {"awe", "wonder"}:
+            return "layered_reveal"
+        if a.emotional_register in {"calm", "melancholic"}:
+            return "atmospheric_drift"
+        if a.scene_purpose in {"confront", "develop"}:
+            return "subject_follow"
+        if motion in {"reveal_wide", "pull_out", "crane_up", "orbit"}:
+            return "layered_reveal"
+        return "depth_push"
+
+    def _depth_mode(self, treatment: str, dof: float) -> str:
+        if treatment in {"layered_reveal", "subject_follow", "depth_push"}:
+            return "parallax"
+        if dof >= 0.65:
+            return "focus_plane"
+        return "atmospheric_layers"
+
+    def _focus_behavior(self, framing: str, dof: float, treatment: str) -> str:
+        if framing in {"close_up", "extreme_close_up", "medium_close"} or dof >= 0.65:
+            return "rack_focus" if treatment == "subject_follow" else "shallow_focus"
+        return "deep_focus"
+
+    def _atmosphere_mode(self, a: SceneAnalysis, treatment: str) -> str:
+        if a.emotional_register in {"awe", "wonder"}:
+            return "light_haze"
+        if a.emotional_register in {"tense", "dread"}:
+            return "contrast_air"
+        if a.location_type == "exterior" and a.time_of_day in {"dawn", "dusk", "night"}:
+            return "haze_particles"
+        if treatment == "atmospheric_drift":
+            return "soft_air"
+        return "none"
 
     def _transition_in(self, shot_index: int, a: SceneAnalysis) -> str:
         if shot_index == 0:

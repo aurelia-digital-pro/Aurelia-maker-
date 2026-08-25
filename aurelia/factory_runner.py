@@ -102,6 +102,8 @@ def _build_production_manifest(
         "music_provenance": dict(getattr(production, "music_provenance", {})),
         "ambient_provenance": dict(getattr(production, "ambient_provenance", {})),
         "audio_provenance": dict(getattr(production, "audio_provenance", {})),
+        "cinematic_treatments": list(getattr(production, "cinematic_treatments", [])),
+        "cinematic_treatment_count": len(getattr(production, "cinematic_treatments", [])),
         "stage_artifacts": str(stage_artifacts_root),
         "stage_artifact_count": len(PRODUCTION_STAGES),
         "delivery_validation": delivery_validation,

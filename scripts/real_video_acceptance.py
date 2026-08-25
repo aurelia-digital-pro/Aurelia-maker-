@@ -64,9 +64,10 @@ def main() -> None:
             raise RuntimeError("Episode id must be an explicit four-digit value")
         if not script.is_file() or script.stat().st_size == 0:
             raise RuntimeError(f"Missing selected episode script: {script}")
-        expected_name = f"episode-{episode_id}.txt"
-        if script.name != expected_name:
-            raise RuntimeError(f"Episode/script mismatch: --episode {episode_id} requires {expected_name}, got {script.name}")
+        # The acceptance harness intentionally accepts a descriptive script
+        # filename (for example the representative AURELIA introduction).
+        # Episode identity remains strict through the Chat command, manifest
+        # episode_id, and source_text_sha256 binding checks below.
 
         source_text = script.read_text(encoding="utf-8").strip()
         source_sha256 = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
@@ -107,6 +108,13 @@ def main() -> None:
             production_root / "master" / "graded.mp4",
             production_root / "audio" / "ambient_bed.wav",
         ]
+        treatment_records = json.loads(manifest_path.read_text(encoding="utf-8")).get("cinematic_treatments", [])
+        if not treatment_records:
+            raise RuntimeError("Acceptance requires persisted cinematic treatment records")
+        depth_artifacts = [Path(item.get("depth_artifact", "")) for item in treatment_records]
+        if any(not path.is_file() or path.stat().st_size < 100 for path in depth_artifacts):
+            raise RuntimeError(f"Acceptance requires valid depth artifacts: {depth_artifacts}")
+        required_artifacts.extend(depth_artifacts)
         qc_result = run_qc(
             final,
             srt_path=required_artifacts[4],

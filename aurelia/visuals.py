@@ -18,9 +18,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import tempfile
 
 from PIL import Image, ImageEnhance, ImageFilter
 
+from .depth import build_depth_map
 from .ffmpeg_util import run_ffmpeg
 
 
@@ -89,6 +91,7 @@ class CinematicVisualEngine:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         camera     = camera     or {}
+        depth      = depth      or {}
         lighting   = lighting   or {}
         atmosphere = atmosphere or {}
         vfx        = vfx        or {}
@@ -200,6 +203,12 @@ class CinematicVisualEngine:
             x_expr = cx
             y_expr = cy
 
+        if str(depth.get("mode", "none")).lower() in {"parallax", "atmospheric_layers", "focus_plane"}:
+            return self._render_parallax(
+                source_path, output_path, duration, zoom_expr, x_expr, y_expr,
+                denominator, lighting, atmosphere, vfx, depth,
+            )
+
         filters = [
             f"scale={self.width}:{self.height}:force_original_aspect_ratio=increase",
             f"crop={self.width}:{self.height}",
@@ -223,6 +232,86 @@ class CinematicVisualEngine:
             str(output_path),
         ]
         result = run_ffmpeg(command)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr)
+        return output_path
+
+    def _render_parallax(
+        self,
+        source_path: Path,
+        output_path: Path,
+        duration: float,
+        zoom_expr: str,
+        x_expr: str,
+        y_expr: str,
+        denominator: int,
+        lighting: dict[str, Any],
+        atmosphere: dict[str, Any],
+        vfx: dict[str, Any],
+        depth: dict[str, Any],
+    ) -> Path:
+        """Render a deterministic 2.5D shot from a source image and depth map.
+
+        The source is split into a base world and a gently offset foreground
+        layer. A heuristic depth map controls the masked merge; this is an
+        explicit, bounded cinematic treatment rather than a fake claim of
+        arbitrary character animation or metric depth.
+        """
+        strength = min(max(float(depth.get("parallax_strength", 0.08)), 0.0), 0.20)
+        fg_zoom = f"({zoom_expr})+{strength * 0.12:.6f}"
+        fg_x = f"({x_expr})+(iw-iw/zoom)*{strength:.6f}*on/{denominator}"
+        fg_y = f"({y_expr})+(ih-ih/zoom)*{strength * 0.45:.6f}*on/{denominator}"
+        base = (
+            f"scale={self.width}:{self.height}:force_original_aspect_ratio=increase,"
+            f"crop={self.width}:{self.height},"
+            f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':"
+            f"d=1:s={self.width}x{self.height}:fps={self.fps}"
+        )
+        foreground = (
+            f"scale={self.width}:{self.height}:force_original_aspect_ratio=increase,"
+            f"crop={self.width}:{self.height},"
+            f"zoompan=z='{fg_zoom}':x='{fg_x}':y='{fg_y}':"
+            f"d=1:s={self.width}x{self.height}:fps={self.fps}"
+        )
+        mask = (
+            f"scale={self.width}:{self.height}:force_original_aspect_ratio=increase,"
+            f"crop={self.width}:{self.height},format=gray"
+        )
+        post = self._ffmpeg_visual_filters(
+            lighting, atmosphere, vfx, label_prefix="parallax"
+        )
+        post_chain = ",".join(post)
+        graph = (
+            f"[0:v]{base}[base_layer];"
+            f"[0:v]{foreground}[foreground_layer];"
+            f"[1:v]{mask}[depth_mask];"
+            f"[base_layer][foreground_layer][depth_mask]maskedmerge[composite]"
+        )
+        if post_chain:
+            graph += f";[composite]{post_chain}[outv]"
+        else:
+            graph += ";[composite]format=yuv420p[outv]"
+
+        requested_depth = depth.get("artifact_path")
+        if requested_depth:
+            depth_path = build_depth_map(source_path, Path(requested_depth))
+        else:
+            depth_path = None
+
+        with tempfile.TemporaryDirectory(prefix="aurelia-depth-") as tmp:
+            if depth_path is None:
+                depth_path = build_depth_map(source_path, Path(tmp) / "depth.png")
+            command = [
+                "-y", "-hide_banner", "-loglevel", "error",
+                "-loop", "1", "-i", str(source_path),
+                "-loop", "1", "-i", str(depth_path),
+                "-filter_complex", graph,
+                "-map", "[outv]", "-t", f"{duration:.6f}", "-an",
+                "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+                "-pix_fmt", "yuv420p", "-r", str(self.fps),
+                "-movflags", "+faststart", str(output_path),
+            ]
+            result = run_ffmpeg(command)
         if result.returncode != 0:
             raise RuntimeError(result.stderr)
         return output_path
@@ -287,6 +376,7 @@ class CinematicVisualEngine:
         lighting: dict[str, Any],
         atmosphere: dict[str, Any],
         vfx: dict[str, Any],
+        label_prefix: str = "",
     ) -> list[str]:
         filters: list[str] = []
         brightness = float(lighting.get("brightness", 1.0))
@@ -319,10 +409,11 @@ class CinematicVisualEngine:
 
         bloom = min(max(float(vfx.get("bloom", 0.0) or 0.0), 0.0), 0.35)
         if bloom > 0:
+            prefix = f"{label_prefix}_" if label_prefix else ""
             filters.extend([
-                "split=2[base][glow]",
-                f"[glow]gblur=sigma={1.5 + bloom * 8.0:.3f}[glowblur]",
-                f"[base][glowblur]blend=all_mode=screen:all_opacity={bloom:.3f}",
+                f"split=2[{prefix}base][{prefix}glow]",
+                f"[{prefix}glow]gblur=sigma={1.5 + bloom * 8.0:.3f}[{prefix}glowblur]",
+                f"[{prefix}base][{prefix}glowblur]blend=all_mode=screen:all_opacity={bloom:.3f}",
             ])
         return filters
 
@@ -363,6 +454,9 @@ def render_cinematic_shot(
     motion = _model_to_dict(cinematography_data.get("motion", {}))
 
     camera["movement"] = motion.get("type") or camera.get("movement") or "static"
+    depth.setdefault("mode", shot_data.get("depth_mode", "none"))
+    if "parallax_strength" in shot_data:
+        depth.setdefault("parallax_strength", shot_data["parallax_strength"])
     camera.setdefault(
         "zoom_start",
         _model_to_dict(motion.get("start", {})).get("zoom", 1.0),

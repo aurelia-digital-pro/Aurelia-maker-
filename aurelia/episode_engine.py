@@ -97,7 +97,7 @@ class EpisodeProduction:
         self.root.mkdir(parents=True, exist_ok=True)
         self.dirs = {
             name: self.root / name
-            for name in ("visuals", "shots", "audio", "edit", "master", "delivery", "factory")
+            for name in ("visuals", "depth", "shots", "audio", "edit", "master", "delivery", "factory")
         }
         for path in self.dirs.values():
             path.mkdir(parents=True, exist_ok=True)
@@ -114,6 +114,7 @@ class EpisodeProduction:
         self.audio_provenance: dict[str, Any] = {}
         self.music_provenance: dict[str, Any] = {}
         self.ambient_provenance: dict[str, Any] = {}
+        self.cinematic_treatments: list[dict[str, Any]] = []
 
     @staticmethod
     def _extract_title(request_text: str) -> str:
@@ -332,6 +333,9 @@ class EpisodeProduction:
                     shot_motion["magnitude"] = shot.get("motion_magnitude", shot_motion.get("magnitude", 0.0))
                     shot_depth["depth_of_field"] = shot.get("depth_of_field", shot_depth.get("depth_of_field", 0.0))
                     shot_direction["shot_function"] = shot.get("shot_function", "coverage")
+                    shot_direction["cinematic_treatment"] = shot.get("cinematic_treatment", "depth_push")
+                    shot_direction["focus_behavior"] = shot.get("focus_behavior", "deep_focus")
+                    shot_direction["atmosphere_mode"] = shot.get("atmosphere_mode", "none")
                     shot_direction["continuity"] = context.to_dict()
 
                     if checkpoint.is_done(scene.index, shot_idx, path):
@@ -525,6 +529,7 @@ class EpisodeProduction:
         engine = CinematicVisualEngine()
         all_clips: list[Path] = []
         boundary_transitions: list[str] = []
+        rendered_treatments: list[dict[str, Any]] = []
 
         for scene in self.scenes:
             direction     = scene.direction
@@ -571,11 +576,34 @@ class EpisodeProduction:
                 dof      = float(shot_dict.get("depth_of_field",
                                 direction.get("depth", {}).get("depth_of_field", 0.0)))
                 duration = float(shot_dict.get("duration", scene.duration))
+                treatment = str(shot_dict.get("cinematic_treatment", "depth_push"))
+                depth_mode = str(shot_dict.get("depth_mode", "none"))
+                depth_artifact = self.dirs["depth"] / (
+                    f"scene_{scene.index + 1:02d}_shot_{i:02d}_depth.png"
+                )
+                parallax_strength = {
+                    "layered_reveal": 0.14,
+                    "subject_follow": 0.10,
+                    "depth_push": 0.08,
+                    "atmospheric_drift": 0.05,
+                }.get(treatment, 0.06)
+                rendered_treatments.append({
+                    "scene_index": scene.index,
+                    "shot_index": i,
+                    "treatment": treatment,
+                    "depth_mode": depth_mode,
+                    "focus_behavior": shot_dict.get("focus_behavior", "deep_focus"),
+                    "atmosphere_mode": shot_dict.get("atmosphere_mode", "none"),
+                    "depth_artifact": str(depth_artifact),
+                    "parallax_strength": parallax_strength,
+                })
                 engine.render_motion(
                     asset, out,
                     duration=duration,
                     camera={"movement": motion, "zoom_start": z_start, "zoom_end": z_end},
-                    depth={"depth_of_field": dof},
+                    depth={"depth_of_field": dof, "mode": depth_mode,
+                           "parallax_strength": parallax_strength,
+                           "artifact_path": str(depth_artifact)},
                     lighting={"brightness": brightness, "contrast": contrast,
                                "saturation": saturation},
                     atmosphere={"blur": atm_haze * 0.8, "haze": atm_haze, "fog": atm_fog},
@@ -621,12 +649,14 @@ class EpisodeProduction:
         if not all_clips:
             raise RuntimeError("render_shots produced no clips")
         self._shot_transitions = boundary_transitions
+        self.cinematic_treatments = rendered_treatments
         if self.visual_manifest_path.is_file():
             try:
                 manifest = json.loads(self.visual_manifest_path.read_text(encoding="utf-8"))
                 for record in manifest.get("scenes", []):
                     record["rendered_motion"] = True
                 manifest.setdefault("visual_processing", {})["rendered_motion"] = True
+                manifest["cinematic_treatments"] = rendered_treatments
                 self.visual_manifest_path.write_text(
                     json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
                 )
@@ -756,6 +786,7 @@ class EpisodeProduction:
             "audio_provenance": dict(self.audio_provenance),
             "music_provenance": dict(self.music_provenance),
             "ambient_provenance": dict(self.ambient_provenance),
+            "cinematic_treatments": list(self.cinematic_treatments),
             "directing":        [scene.direction for scene in self.scenes],
             "analyses":         [scene.analysis  for scene in self.scenes],
             "timestamp":        time.time(),

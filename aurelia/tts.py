@@ -237,48 +237,26 @@ def _concat_wavs(parts: list[Path], output: Path, pause_ms: int = 500) -> None:
 
 # ── public API ─────────────────────────────────────────────────────────────────
 
-def synthesize_script(text: str, out_wav: Path) -> None:
-    """Synthesize narration text to WAV using best available offline TTS.
+def synthesize_script(
+    text: str,
+    out_wav: Path,
+    *,
+    language: str = "auto",
+    voice: str | None = None,
+    allow_degraded: bool | None = None,
+) -> dict:
+    """Synthesize narration through the strict provider-aware production path.
 
-    Handles:
-    - Arabic and English detection
-    - Multi-speaker dialogue (SPEAKER: line format)
-    - Falls back gracefully through Piper → Kokoro → espeak-ng → pyttsx3
+    Edge Neural TTS is the default for every language. A local espeak path is
+    available only when explicitly requested with ``allow_degraded=True`` (or
+    ``AURELIA_ALLOW_DEGRADED_TTS=1`` outside production mode); no silent
+    substitution is permitted for production acceptance.
     """
-    out_wav = Path(out_wav)
-    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    from .providers.audio import EdgeTTSProvider
 
-    if not text or not text.strip():
-        raise ValueError("TTS: empty narration text")
-
-    segments = _split_dialogue(text)
-    lang = _detect_lang(text)
-
-    if len(segments) == 1:
-        # Single narrator — simple path
-        _synthesize_single(segments[0][1], out_wav, lang)
-        return
-
-    # Multi-speaker dialogue: synthesize each segment separately then concat
-    with tempfile.TemporaryDirectory(prefix="aurelia-tts-") as tmp:
-        parts: list[Path] = []
-        for idx, (speaker, line) in enumerate(segments):
-            seg_wav = Path(tmp) / f"seg_{idx:04d}.wav"
-            seg_lang = _detect_lang(line)
-            try:
-                _synthesize_single(line, seg_wav, seg_lang)
-                if seg_wav.exists() and seg_wav.stat().st_size > 500:
-                    parts.append(seg_wav)
-            except Exception:
-                pass
-
-        if not parts:
-            raise RuntimeError("TTS: all dialogue segments failed")
-
-        _concat_wavs(parts, out_wav, pause_ms=600)
-
-    if not out_wav.exists() or out_wav.stat().st_size < 500:
-        raise RuntimeError("TTS: concatenated output is empty")
+    provider = EdgeTTSProvider(voice=voice, allow_degraded=allow_degraded)
+    output = provider.generate(text, Path(out_wav), language=language)
+    return dict(provider.provenance)
 
 
 def _synthesize_single(text: str, out_wav: Path, lang: str) -> None:

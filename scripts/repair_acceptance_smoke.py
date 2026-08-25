@@ -38,9 +38,14 @@ def main() -> None:
                 vfx={"grain": 0.02, "vignette": 0.2, "bloom": 0.08},
             )
         assemble_cinematic_clips(clips, ["dissolve"], final, transition_duration=0.4)
-        synthesize_script("AURELIA Maker current production path smoke test.", audio)
+        tts_provenance = synthesize_script(
+            "AURELIA Maker current production path smoke test.", audio,
+            language="en",
+        )
 
         assert final.stat().st_size > 1000
+        assert tts_provenance.get("provider") == "edge-tts", tts_provenance
+        assert tts_provenance.get("fallback") is False, tts_provenance
         assert audio.stat().st_size > 1000
         assert probe_duration(final) >= 4.0
         print(f"CINEMATIC RENDER PASS: {final}")

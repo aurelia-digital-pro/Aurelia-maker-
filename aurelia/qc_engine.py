@@ -108,6 +108,70 @@ def visual_variation_preflight(video_path: Path | str, threshold: float = 0.005)
     }
 
 
+def measure_audio_quality(video_path: Path | str) -> dict[str, Any]:
+    """Measure final-program loudness, true peak, and sample clipping.
+
+    The production mix targets -16 LUFS and -1.5 dBTP.  This helper measures
+    the encoded final audio with FFmpeg's EBU R128 and ASTATS filters; it does
+    not normalize or alter the signal while measuring it.
+    """
+    path = Path(video_path)
+    ffmpeg = shutil.which("ffmpeg")
+    result: dict[str, Any] = {
+        "available": bool(ffmpeg and path.is_file()),
+        "target_integrated_lufs": -16.0,
+        "target_true_peak_dbfs": -1.5,
+        "integrated_lufs": None,
+        "true_peak_dbfs": None,
+        "sample_peak_dbfs": None,
+        "sample_clipping_detected": None,
+        "passed": False,
+    }
+    if not result["available"]:
+        result["message"] = "ffmpeg unavailable or video missing"
+        return result
+    try:
+        ebur = subprocess.run(
+            [ffmpeg, "-hide_banner", "-i", str(path), "-map", "0:a:0",
+             "-af", "ebur128=peak=true:framelog=verbose", "-f", "null", "-"],
+            capture_output=True, timeout=180,
+        )
+        ebur_text = ebur.stderr.decode("utf-8", errors="replace")
+        integrated = re.findall(r"^\s*I:\s*(-?[0-9.]+)\s*LUFS", ebur_text, re.MULTILINE)
+        true_peak = re.findall(r"^\s*Peak:\s*(-?[0-9.]+)\s*dBFS", ebur_text, re.MULTILINE)
+        if integrated:
+            result["integrated_lufs"] = float(integrated[-1])
+        if true_peak:
+            result["true_peak_dbfs"] = float(true_peak[-1])
+        astats = subprocess.run(
+            [ffmpeg, "-hide_banner", "-i", str(path), "-map", "0:a:0",
+             "-af", "astats=metadata=1:reset=0:measure_overall=1", "-f", "null", "-"],
+            capture_output=True, timeout=180,
+        )
+        astats_text = astats.stderr.decode("utf-8", errors="replace")
+        sample_peaks = re.findall(r"Peak level dB:\s*(-?[0-9.]+)", astats_text)
+        if sample_peaks:
+            result["sample_peak_dbfs"] = float(sample_peaks[-1])
+            result["sample_clipping_detected"] = result["sample_peak_dbfs"] >= -0.1
+        loudness_ok = result["integrated_lufs"] is not None and -18.0 <= result["integrated_lufs"] <= -14.0
+        true_peak_ok = result["true_peak_dbfs"] is not None and result["true_peak_dbfs"] <= -1.0
+        clipping_ok = result["sample_clipping_detected"] is False
+        result["passed"] = bool(loudness_ok and true_peak_ok and clipping_ok)
+        result["checks"] = {
+            "integrated_loudness_range": loudness_ok,
+            "true_peak_limit": true_peak_ok,
+            "sample_clipping": clipping_ok,
+        }
+        if not result["passed"]:
+            result["message"] = (
+                f"loudness={result['integrated_lufs']}, true_peak={result['true_peak_dbfs']}, "
+                f"sample_peak={result['sample_peak_dbfs']}"
+            )
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        result["message"] = f"audio quality measurement failed: {exc}"
+    return result
+
+
 def run_qc(
     video_path: Path | str,
     srt_path: Path | str | None = None,
@@ -121,6 +185,7 @@ def run_qc(
     required_artifacts: list[Path | str] | None = None,
     narration_path: Path | str | None = None,
     expected_text_path: Path | str | None = None,
+    require_audio_quality: bool = False,
 ) -> dict[str, Any]:
     """Run full QC on the final delivery MP4.
 
@@ -311,6 +376,21 @@ def run_qc(
     if audio_streams:
         audio_codec = audio_streams[0].get("codec_name", "")
 
+    audio_quality = measure_audio_quality(video_path)
+    if require_audio_quality:
+        checks.append(_check(
+            "audio_loudness", bool(audio_quality.get("checks", {}).get("integrated_loudness_range")),
+            "FATAL", str(audio_quality.get("message", "")),
+        ))
+        checks.append(_check(
+            "audio_true_peak", bool(audio_quality.get("checks", {}).get("true_peak_limit")),
+            "FATAL", str(audio_quality.get("message", "")),
+        ))
+        checks.append(_check(
+            "audio_clipping", bool(audio_quality.get("checks", {}).get("sample_clipping")),
+            "FATAL", str(audio_quality.get("message", "")),
+        ))
+
     # ── WARNING checks ────────────────────────────────────────────────────
 
     # subtitles
@@ -448,8 +528,10 @@ def run_qc(
             f"Duration {duration:.1f}s vs planned {planned_duration_s:.1f}s ({ratio*100:.0f}% off)",
         ))
 
-    return _build_result(checks, duration, [width, height], fps,
-                         {"video": codec, "audio": audio_codec})
+    result = _build_result(checks, duration, [width, height], fps,
+                           {"video": codec, "audio": audio_codec})
+    result["audio_quality"] = audio_quality
+    return result
 
 
 def _build_result(
@@ -475,4 +557,4 @@ def _build_result(
     }
 
 
-__all__ = ["run_qc", "visual_variation_preflight"]
+__all__ = ["run_qc", "visual_variation_preflight", "measure_audio_quality"]

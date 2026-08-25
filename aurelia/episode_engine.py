@@ -110,6 +110,10 @@ class EpisodeProduction:
         self.visual_manifest_path = self.dirs["visuals"] / "visual_manifest.json"
         # Total visual assets generated (shots, not scenes)
         self._total_visual_assets: int = 0
+        # Provider-aware narration evidence propagated into the final manifest.
+        self.audio_provenance: dict[str, Any] = {}
+        self.music_provenance: dict[str, Any] = {}
+        self.ambient_provenance: dict[str, Any] = {}
 
     @staticmethod
     def _extract_title(request_text: str) -> str:
@@ -418,13 +422,18 @@ class EpisodeProduction:
         """Synthesize narration. TTS auto-detects language from text content."""
         self._emit(f"Synthesizing narration (TTS, language={self.language})...")
         narration_path = self.dirs["audio"] / "narration.wav"
-        # The provider delegates to the same auto-detecting offline chain while
-        # keeping the stage contract explicit and testable.
-        EdgeTTSProvider().generate(script_text, narration_path, language=self.language)
+        provider = EdgeTTSProvider()
+        provider.generate(script_text, narration_path, language=self.language)
         if not narration_path.exists() or narration_path.stat().st_size < 100:
             raise RuntimeError("Narration synthesis failed — TTS produced no output")
         duration = probe_duration(narration_path)
-        self._emit(f"Narration: {duration:.1f}s | language={self.language}")
+        self.audio_provenance = dict(provider.provenance)
+        if not self.audio_provenance or self.audio_provenance.get("fallback"):
+            raise RuntimeError("Production narration must expose a non-degraded provider provenance")
+        self._emit(
+            f"Narration: {duration:.1f}s | provider={self.audio_provenance.get('provider')} "
+            f"voice={self.audio_provenance.get('voice')} | language={self.language}"
+        )
         return narration_path
 
     def build_subtitles(self, narration_path: Path) -> Path:
@@ -709,6 +718,7 @@ class EpisodeProduction:
             scene_count=len(self.scenes),
             narration_path=narration_path,
             expected_text_path=self.script_path,
+            require_audio_quality=True,
         )
 
         total_assets = self._total_visual_assets or None
@@ -741,6 +751,10 @@ class EpisodeProduction:
             "outputs":          {key: str(path) for key, path in outputs.items()},
             "qc":               qc,
             "visual_qc":        visual_qc,
+            "audio_quality":    dict(qc.get("audio_quality", {})),
+            "audio_provenance": dict(self.audio_provenance),
+            "music_provenance": dict(self.music_provenance),
+            "ambient_provenance": dict(self.ambient_provenance),
             "directing":        [scene.direction for scene in self.scenes],
             "analyses":         [scene.analysis  for scene in self.scenes],
             "timestamp":        time.time(),
@@ -771,15 +785,26 @@ class EpisodeProduction:
         )
         emotional_arc = [str((scene.analysis or {}).get("emotional_register", "neutral")) for scene in self.scenes]
         music_path = self.dirs["audio"] / "cinematic_music.wav"
-        CinematicMusicProvider().generate(
-            duration + 4.0, music_path, emotional_arc=emotional_arc
-        )
+        music_provider = CinematicMusicProvider()
+        music_provider.generate(duration + 4.0, music_path, emotional_arc=emotional_arc)
+        self.music_provenance = {
+            "provider": music_provider.name,
+            "engine": "generate_cinematic_music",
+            "artifact": str(music_path),
+            "duration_s": duration + 4.0,
+            "emotional_arc": emotional_arc,
+            "fallback": False,
+            "fallback_reason": "",
+        }
         ambient_path = self.dirs["audio"] / "ambient_bed.wav"
         ambient_segments: list[Path] = []
+        ambient_provider = SynthAmbientProvider()
+        ambient_environments: list[str] = []
         for scene in self.scenes:
             environment = str((scene.direction or {}).get("environment", "abstract"))
+            ambient_environments.append(environment)
             segment_path = self.dirs["audio"] / f"ambient_scene_{scene.index + 1:02d}.wav"
-            SynthAmbientProvider().generate(
+            ambient_provider.generate(
                 environment, max(2.0, scene.duration + 0.25), segment_path,
                 seed=scene.index,
             )
@@ -790,9 +815,17 @@ class EpisodeProduction:
             for segment in ambient_segments:
                 combined += AudioSegment.from_wav(segment)
             combined.export(ambient_path, format="wav")
-        except Exception:
-            if ambient_segments:
-                ambient_path.write_bytes(ambient_segments[0].read_bytes())
+        except Exception as exc:
+            raise RuntimeError(f"Ambient bed assembly failed: {exc}") from exc
+        self.ambient_provenance = {
+            "provider": ambient_provider.name,
+            "engine": "synthesize_ambient",
+            "artifact": str(ambient_path),
+            "environments": ambient_environments,
+            "duration_s": probe_duration(ambient_path),
+            "fallback": False,
+            "fallback_reason": "",
+        }
         sound_design_path = self.dirs["audio"] / "sound_design.wav"
         scene_boundaries = []
         cursor = 0.0
@@ -814,6 +847,9 @@ class EpisodeProduction:
             "duration":    probe_duration(outputs["final"]),
             "scenes":      len(self.scenes),
             "total_shots": total_shots,
+            "audio_provenance": dict(self.audio_provenance),
+            "music_provenance": dict(self.music_provenance),
+            "ambient_provenance": dict(self.ambient_provenance),
         }
 
 

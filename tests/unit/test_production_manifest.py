@@ -12,13 +12,27 @@ def test_production_manifest_preserves_qc_results_for_final_proof(tmp_path: Path
             SimpleNamespace(
                 direction={"environment": "space"},
             )
-        ]
+        ],
+        audio_provenance={
+            "provider": "edge-tts",
+            "voice": "ar-SA-HamedNeural",
+            "language": "ar",
+            "fallback": False,
+        },
+        music_provenance={"provider": "numpy-pydub-ambient-music", "fallback": False},
+        ambient_provenance={"provider": "numpy-ambient", "fallback": False},
     )
     qc = {
         "passed": True,
         "delivery_blocked": False,
         "fatals": [],
         "checks": [{"name": "has_audio", "passed": True}],
+        "audio_quality": {
+            "passed": True,
+            "integrated_lufs": -16.3,
+            "true_peak_dbfs": -3.7,
+            "sample_clipping_detected": False,
+        },
     }
     visual_qc = {
         "passed": True,
@@ -45,6 +59,12 @@ def test_production_manifest_preserves_qc_results_for_final_proof(tmp_path: Path
     assert manifest["qc"] == qc
     assert manifest["visual_qc"] == visual_qc
     assert manifest["delivery_validation"]["passed"] is True
+    assert manifest["audio_provenance"]["provider"] == "edge-tts"
+    assert manifest["audio_provenance"]["voice"] == "ar-SA-HamedNeural"
+    assert manifest["audio_provenance"]["fallback"] is False
+    assert manifest["music_provenance"]["provider"] == "numpy-pydub-ambient-music"
+    assert manifest["ambient_provenance"]["provider"] == "numpy-ambient"
+    assert manifest["audio_quality"]["passed"] is True
     json.dumps(manifest)
 
 

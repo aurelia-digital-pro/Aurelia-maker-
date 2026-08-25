@@ -105,12 +105,16 @@ def main() -> None:
             production_root / f"episode-{episode_id}.srt",
             production_root / "edit" / "edit_mixed.mp4",
             production_root / "master" / "graded.mp4",
+            production_root / "audio" / "ambient_bed.wav",
         ]
         qc_result = run_qc(
             final,
             srt_path=required_artifacts[4],
             min_duration_s=30.0,
             required_artifacts=required_artifacts,
+            narration_path=required_artifacts[1],
+            expected_text_path=script,
+            require_audio_quality=True,
         )
         if not qc_result["passed"]:
             raise RuntimeError(f"QC rejected Episode {episode_id}: {qc_result}")
@@ -123,6 +127,14 @@ def main() -> None:
         if not manifest_path.is_file():
             raise RuntimeError(f"Canonical Factory manifest missing: {manifest_path}")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        audio_provenance = manifest.get("audio_provenance", {})
+        audio_quality = manifest.get("audio_quality", {})
+        if not audio_provenance or audio_provenance.get("fallback"):
+            raise RuntimeError("Acceptance requires non-degraded audio provenance")
+        if audio_provenance.get("provider") == "espeak-ng":
+            raise RuntimeError("Acceptance rejects espeak-ng as primary narration provider")
+        if not audio_quality.get("passed"):
+            raise RuntimeError(f"Acceptance rejected audio quality: {audio_quality}")
         if manifest.get("episode_id") != episode_id:
             raise RuntimeError("Factory manifest episode id does not match acceptance target")
         if manifest.get("source") != "chat" or manifest.get("source_text_sha256") != source_sha256:
@@ -145,13 +157,15 @@ def main() -> None:
             "size_bytes": size,
             "format": metadata.get("format_name"),
             "scenes": job.metadata.get("result", {}).get("scenes"),
-            "execution": "Chat -> FactoryRunner -> production stages -> visuals -> cinematic FFmpeg motion -> offline TTS -> music -> subtitles -> color grade -> master -> QC -> Delivery",
+            "execution": "Chat -> FactoryRunner -> production stages -> visuals -> CinematicVisualEngine motion -> provider-aware Neural TTS -> music -> subtitles -> color grade -> master -> QC -> Delivery",
             "factory_output": str(produced),
             "canonical_path_verified": True,
             "legacy_produce_episode_used": False,
             "qc_checks": qc_result["checks"],
             "qc_fatals": qc_result["fatals"],
             "qc_warnings": qc_result["warnings"],
+            "audio_provenance": audio_provenance,
+            "audio_quality": audio_quality,
             "representative_frames": frame_evidence,
             "download_url": f"/api/jobs/{job.job_id}/video",
         }

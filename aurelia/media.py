@@ -425,17 +425,10 @@ def generate_ambient_music(duration_sec: float, output: str | Path) -> Path:
         return output_path
 
     except Exception as exc:
-        # Emergency fallback: pure silence (pipeline must not crash over music)
-        try:
-            from pydub import AudioSegment
-            AudioSegment.silent(duration=int(duration_sec * 1000)).export(str(output_path), format="wav")
-            if output_path.is_file() and output_path.stat().st_size > 0:
-                return output_path
-        except Exception:
-            pass
-        # Last resort: write minimal WAV header
-        _write_silent_wav(output_path, int(duration_sec))
-        return output_path
+        # Music is an authored production layer. Never substitute silence while
+        # claiming the stage succeeded; fail loudly so QC/provenance can stop
+        # the job and the actual cause remains visible in CI.
+        raise RuntimeError(f"Ambient music generation failed: {exc}") from exc
 
 
 def _write_silent_wav(path: Path, duration_seconds: int) -> None:

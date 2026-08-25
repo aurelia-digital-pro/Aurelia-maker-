@@ -97,11 +97,15 @@ def _build_production_manifest(
         "source_text_sha256": source_text_sha256,
         "outputs":  {k: str(v) for k, v in final_outputs.items()},
         "sound_design_path": str(sound_design) if sound_design else None,
+        "music_provenance": dict(getattr(production, "music_provenance", {})),
+        "ambient_provenance": dict(getattr(production, "ambient_provenance", {})),
+        "audio_provenance": dict(getattr(production, "audio_provenance", {})),
         "stage_artifacts": str(stage_artifacts_root),
         "stage_artifact_count": len(PRODUCTION_STAGES),
         "delivery_validation": delivery_validation,
         "qc": qc,
         "visual_qc": visual_qc,
+        "audio_quality": dict(qc.get("audio_quality", {})),
         "directing":    [scene.direction for scene in production.scenes],
         "environments": [s.direction.get("environment", "?") for s in production.scenes],
     }
@@ -325,6 +329,7 @@ class FactoryRunner:
         narration: Path | None = None
         subtitles: Path | None = None
         music: Path | None = None
+        ambient: Path | None = None
         sound_design: Path | None = None
         edit: Path | None = None
         final_outputs: dict[str, Path] = {}
@@ -467,7 +472,8 @@ class FactoryRunner:
             production._apply_shot_timing(dur)
             return {**data, "stage": "NARRATION",
                     "narration_duration": dur,
-                    "narration_language": production.language}
+                    "narration_language": production.language,
+                    "audio_provenance": dict(production.audio_provenance)}
 
         def music_processor(data: dict) -> dict:
             nonlocal music
@@ -476,12 +482,21 @@ class FactoryRunner:
             from .media import generate_ambient_music
             generate_ambient_music(total_dur + 4.0, music_path)
             music = music_path
+            production.music_provenance = {
+                "provider": "numpy-pydub-ambient-music",
+                "engine": "generate_ambient_music",
+                "artifact": str(music_path),
+                "duration_s": total_dur + 4.0,
+                "fallback": False,
+                "fallback_reason": "",
+            }
             return {**data, "stage": "MUSIC",
                     "music_duration": total_dur + 4.0,
-                    "music_path": str(music_path)}
+                    "music_path": str(music_path),
+                    "music_provenance": dict(production.music_provenance)}
 
         def sound_processor(data: dict) -> dict:
-            nonlocal sound_design
+            nonlocal sound_design, ambient
             if narration is None:
                 raise RuntimeError("SOUND requires NARRATION")
             total_dur = _effective_planned_duration(production, narration)
@@ -494,16 +509,34 @@ class FactoryRunner:
             from .media import generate_sound_design
             generate_sound_design(total_dur, boundaries, sound_path)
             sound_design = sound_path
+            environment = str((production.scenes[0].direction or {}).get("environment", "abstract")) if production.scenes else "abstract"
+            ambient_path = production.dirs["audio"] / "ambient_bed.wav"
+            from .providers.ambient import SynthAmbientProvider
+            ambient_provider = SynthAmbientProvider()
+            ambient_provider.generate(environment, total_dur + 4.0, ambient_path, seed=job.episode_id)
+            ambient = ambient_path
+            production.ambient_provenance = {
+                "provider": ambient_provider.name,
+                "engine": "synthesize_ambient",
+                "artifact": str(ambient_path),
+                "environment": environment,
+                "duration_s": total_dur + 4.0,
+                "seed": job.episode_id,
+                "fallback": False,
+                "fallback_reason": "",
+            }
             return {**data, "stage": "SOUND",
                     "sound_design_path": str(sound_path),
-                    "sound_design_boundaries": boundaries}
+                    "sound_design_boundaries": boundaries,
+                    "ambient_path": str(ambient_path),
+                    "ambient_provenance": dict(production.ambient_provenance)}
 
         def edit_processor(data: dict) -> dict:
             nonlocal edit
             if narration is None:
                 raise RuntimeError("EDIT requires NARRATION")
             clips = production.render_shots(_scene_assets)
-            edit = production.assemble_edit(clips, narration, music, sound_design)
+            edit = production.assemble_edit(clips, narration, music, sound_design, ambient)
             return {**data, "stage": "EDIT",
                     "clip_count": len(clips),
                     "edit_path": str(edit)}
@@ -564,11 +597,13 @@ class FactoryRunner:
                     production.visual_manifest_path,
                     narration,
                     music,
+                    ambient,
                     sound_design,
                     subtitles,
                     production.dirs["edit"] / "edit_mixed.mp4",
                     production.dirs["master"] / "graded.mp4",
                 ],
+                require_audio_quality=True,
             )
             if qc["warnings"]:
                 for w in qc["warnings"]:
@@ -765,6 +800,9 @@ class FactoryRunner:
             "source_text_sha256": source_sha256,
             "logger_lines": len(logger.lines),
             "fallbacks":    len(logger.fallback_summary()),
+            "music_provenance": dict(getattr(production, "music_provenance", {})),
+            "ambient_provenance": dict(getattr(production, "ambient_provenance", {})),
+            "audio_provenance": dict(getattr(production, "audio_provenance", {})),
         }
 
     def execute(

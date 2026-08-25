@@ -100,6 +100,24 @@ def test_directing_uses_content_specific_environment_and_palette():
     assert person["environment"] == "human"
 
 
+def test_negated_human_cues_do_not_force_portrait_environment():
+    director = DirectingEngine()
+    result = director.direct(
+        "scene-3", "Opening", "No face or person appears; a luminous signal map fills the frame.",
+        duration=8.0, scene_analysis={"emotional_register": "wonder", "preferred_shots": ["wide"]},
+    )
+    assert result["environment"] != "human"
+
+
+def test_scene_title_beats_cross_scene_substring_matches():
+    director = DirectingEngine()
+    result = director.direct(
+        "scene-4", "The Laboratory", "A researcher moves inside a room near the sea.",
+        duration=8.0, scene_analysis={"emotional_register": "calm", "preferred_shots": ["wide"]},
+    )
+    assert result["environment"] == "laboratory"
+
+
 def test_episode_scene_plan_passes_analysis_to_directing(tmp_path):
     script = tmp_path / "script.txt"
     script.write_text("Title: Content direction\nLanguage: en\nbody", encoding="utf-8")

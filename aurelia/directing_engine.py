@@ -19,6 +19,7 @@ Upgrade in this revision:
 from __future__ import annotations
 
 from dataclasses import asdict
+import re
 from typing import Any
 
 from .cinematography import CameraPlan, DepthPlan, MotionPlan
@@ -340,16 +341,40 @@ class DirectingEngine:
         text: str,
         scene_analysis: dict[str, Any] | None = None,
     ) -> str:
+        title_haystack = str(title).casefold()
         haystack = f"{title} {text}".casefold()
-        scores = {
-            name: sum(1 for kw in spec["keywords"] if kw.casefold() in haystack)
-            for name, spec in ENVIRONMENTS.items()
-        }
+        explicit_human = _has_explicit_human_cue(haystack)
+        if explicit_human:
+            return "human"
+
+        def keyword_matches(keyword: str, source: str) -> bool:
+            folded = keyword.casefold()
+            if folded.isascii():
+                return bool(re.search(rf"(?<![a-z0-9]){re.escape(folded)}(?![a-z0-9])", source))
+            return folded in source
+
+        def score_environment(source: str) -> dict[str, int]:
+            return {
+                name: sum(1 for kw in spec["keywords"] if keyword_matches(kw, source))
+                for name, spec in ENVIRONMENTS.items()
+            }
+
+        # Scene titles are the planner's strongest local content anchor. Use
+        # them first so a broad word later in a paragraph cannot pull the
+        # image toward a different environment (e.g. "inside" → home).
+        title_scores = score_environment(title_haystack)
+        title_explicit_human = _has_explicit_human_cue(title_haystack)
+        if title_explicit_human:
+            return "human"
+        title_scores["human"] = 0
+        title_best = max(title_scores, key=title_scores.get)
+        if title_scores[title_best] > 0:
+            return title_best
+
+        scores = score_environment(haystack)
         # Do not let broad conceptual terms (mind, memory, language) select a
         # generic portrait. A human environment requires an explicit person cue.
-        explicit_human = _has_explicit_human_cue(haystack)
-        if not explicit_human:
-            scores["human"] = 0
+        scores["human"] = 0
         best = max(scores, key=scores.get)
         return best if scores[best] > 0 else "abstract"
 

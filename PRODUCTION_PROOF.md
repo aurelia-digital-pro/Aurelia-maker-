@@ -2,77 +2,110 @@
 
 ## الحكم النهائي
 
-**PASS — اجتاز المحرك العام مسار الإنتاج الحقيقي من Browser Chat إلى FINAL MP4.** تم التحقق من النتيجة على الفيديو الفعلي، وليس على السجلات أو الاختبارات وحدها.
+**PASS — اجتاز محرك AURELIA Maker اختبار القبول الحقيقي بعد إصلاح مسار TTS العربي.** تم تنفيذ السيناريو من Browser Chat الحقيقي حتى FINAL MP4، ثم فُحصت النتيجة تقنيًا وبصريًا وصوتيًا. لم يكتفِ التحقق بنجاح اختبارات Python أو بوجود ملف MP4.
 
-## مسار التحقق
+## سبب عطل TTS وتشخيصه
 
-أُرسل السيناريو من واجهة Browser Chat الحقيقية على `http://127.0.0.1:8765/`. كان النص الموجود في Browser Chat هو المدخل الإنتاجي authoritative، ثم مر عبر المسار canonical التالي:
+كانت رسالة الفشل السابقة هي `TTS: all dialogue segments failed`. عند فحص تاريخ Git، ظهرت هذه الرسالة في مسار TTS القديم الذي كان يقسم النص إلى dialogue segments، يبتلع الاستثناءات داخل كل segment، ثم يعرض رسالة عامة بلا سبب subprocess أو timeout أو encoding أو ملف مؤقت. أما مسار الإنتاج الحالي في `EpisodeProduction` فيستخدم `EdgeTTSProvider` مباشرة، ولذلك لا ينبغي أن يعيد إدخال هذا المسار القديم أو أن يتجاوز TTS صامتًا.
 
-> Browser Chat → `/api/chat` → Chat Entry → Factory Runner → Production Pipeline → FINAL MP4 → Chat player/download
+تم فحص البيئة الحالية فعليًا: executable `edge-tts` موجود بإصدار `7.2.8`، وتمت إعادة تجربة النص العربي الكامل بنجاح مع الصوت `ar-SA-HamedNeural` وبدون fallback. وبذلك لم يكن الحل تغيير رسالة الخطأ أو تجاوز narration؛ الإصلاح المطبق جعل مسار Edge أكثر قابلية للتشخيص، وحافظ على الفشل الصارم عند وجود مشكلة حقيقية.
 
-معرّف الحلقة الاختبارية: `0204`  
-معرّف job: `2fea4cb7ed92493da5008aa1031d8719`  
-ملف الإدخال المحفوظ من Chat: `output/.chat_inputs/episode-0204-7ff231c6431c4e98b9ecd55296dddd4a.txt`  
-ملف التسليم: `output/episode-0204/job-2fea4cb7ed92493da5008aa1031d8719/delivery/episode-0204-FINAL.mp4`
+## الإصلاحات العامة
 
-عرض Browser Chat حالة `0204 — COMPLETED (100%)`، ومشغل الفيديو، ورابط `Download FINAL MP4`. فحص عنصر الفيديو داخل الصفحة أعاد `readyState=4` ومدة `113.045s`، وكان مصدر المشغل ورابط التنزيل يشيران إلى endpoint `/api/jobs/2fea4cb7ed92493da5008aa1031d8719/video`.
+أصبح Edge TTS يحتفظ بتاريخ كل محاولة، ويميز بوضوح بين timeout، وخروج subprocess غير صفري، وفشل تحويل WAV عبر FFmpeg، وفشل الملف الناتج أو probe. تظهر المحاولة والسبب الفعلي في الاستثناء النهائي بدل ابتلاع الخطأ. كما أصبحت ملفات Edge المؤقتة تُنشأ داخل مجلد إخراج الوجهة نفسها، لتفادي فشل `os.replace` الناتج عن اختلاف filesystem بين `/tmp` وvolume الإخراج. بقيت سياسة production كما هي: Edge Neural إلزامي، وfallback المحلي لا يُسمح به في production acceptance.
+
+أضيفت regression tests لاختبار تسجيل timeout لكل محاولة، وضمان تمرير النص العربي الكامل إلى Edge TTS دون dialogue segmentation صامتة. لم يتغير مسار English TTS أو مراحل الصوت والمونتاج والـQC، وأُعيد اختبار مزوّد الصوت الإنجليزي أيضًا.
+
+## Production Validation الحقيقي من Browser Chat
+
+أُعيد تشغيل Browser Chat من commit الكود `175f6ca5dbd739a92cc751b5b9ccb45be28ed74d` مع `AURELIA_PRODUCTION_MODE=1` و`AURELIA_FORCE_FALLBACK=0`. أُرسل السيناريو العربي من واجهة `http://127.0.0.1:8765/` بعنوان:
+
+> AURELIA Maker — A Cinematic Welcome to the World
+
+كان نص Browser Chat هو المدخل authoritative، وحُفظ في:
+
+`output/.chat_inputs/episode-0001-9dea25efd00941d9a7afd6a20173ccbe.txt`
+
+ثم مر الطلب عبر المسار الكامل:
+
+> Browser Chat → `/api/chat` → Chat Entry → Factory Runner → Script/Scene Planning → Visual Direction → Pollinations → Cinematic Motion → Edge TTS → Audio Mix → Subtitles → Edit → Color → Master → QC → Delivery → FINAL MP4
+
+| دليل التكامل | النتيجة الفعلية |
+|---|---|
+| Episode | `0001` |
+| Job ID | `29d002cbc08f46e68f1c029f991200ad` |
+| Browser Chat | قبل الطلب، ثم عرض `COMPLETED (100%)` |
+| خطة الإنتاج | 9 مشاهد، 23 لقطة |
+| النتيجة في Chat | player و`Download FINAL MP4` |
+| player readyState | `4` |
+| مدة player | `115.882s` |
+| endpoint | `/api/jobs/29d002cbc08f46e68f1c029f991200ad/video` |
 
 ## خصائص FINAL MP4
 
+ملف التسليم هو:
+
+`output/episode-0001/job-29d002cbc08f46e68f1c029f991200ad/delivery/episode-0001-FINAL.mp4`
+
 | البوابة | النتيجة الفعلية |
 |---|---|
-| SHA-256 | `9b17532d54e1c8f38b572022f44c1df79f5a4d7514ac79a7feb4e5f38cd511a0` |
-| الحجم | `70,652,497` bytes |
-| الحاوية | MP4 / probe score 100 |
-| الفيديو | H.264 High, `1920x1080`, progressive, `24 fps`, `113.041667s` |
-| الصوت | AAC LC, stereo, `48 kHz`, `113.045s` |
+| SHA-256 | `462fa5736abcadc46c68779168f76ed8156360b19fd4fb6068c1bcde539dd496` |
+| الحجم | `72,635,861` bytes |
+| الحاوية | MP4، probe score `100` |
+| الفيديو | H.264 High، `1920×1080`، progressive، `24 fps`، `115.875s` |
+| الصوت | AAC LC، stereo، `48 kHz`، `115.882s` |
 | full decode | نجح، return code `0`، بلا أخطاء |
-| freezedetect | نجح بالمرشح `freezedetect=n=-60dB:d=0.5`، بلا freeze durations |
-| visual variation | نجح؛ minimum diff `0.1053734341` مقابل threshold `0.005` |
+| freezedetect | نجح باستخدام `freezedetect=n=-60dB:d=0.5`، بلا freeze durations |
+| visual variation | نجح؛ minimum diff `0.09248025599` مقابل threshold `0.005` |
 | run_qc الرسمي | `passed=true`، بلا FATAL وبلا WARNING |
+| مدة الإنتاج | أقل من دقيقتين كما طلبت المواصفة |
 
-أُعيد تشغيل `run_qc` الرسمي على ملف الإدخال authoritative من Browser Chat مع `require_audio_quality=True`. اجتازت جميع البوابات: وجود الملف، الحاوية، الفيديو، الصوت، المدة، الدقة، معدل الإطارات، الترميز، full decode، freeze frames، temporal variation، visual variation، loudness، true peak، clipping، subtitle completeness، narration، black frames، A/V duration، وA/V sync.
+أُعيد تشغيل `run_qc` الرسمي على FINAL مع `require_audio_quality=True` وعلى ملف الإدخال المحفوظ من Browser Chat. اجتازت البوابات جميعها: وجود الملف، الحاوية، الفيديو، الصوت، المدة، الدقة، FPS، الترميز، full decode، freeze frames، temporal variation، visual variation، loudness، true peak، clipping، subtitle completeness، narration audibility، black frames، A/V duration، وA/V sync.
 
-## المصدر البصري والاستمرارية
+## مزودات الصورة والتوجيه السينمائي
 
-| العنصر | الدليل الفعلي |
+| العنصر | النتيجة الفعلية |
 |---|---|
-| مزود الصور | `cloud-api/pollinations` لكل الأصول الـ24 |
+| visual provider | `cloud-api/pollinations` لكل الأصول |
+| الصور الحقيقية | 23 أصلًا مولدًا عبر API |
 | Pillow fallback | `0` |
-| الأصول البصرية | `24` صورة مولدة فعليًا |
-| depth assets | `24` ملفًا |
-| cinematic treatments | `24` treatment موثقًا |
-| الانتقالات | `19` انتقالًا عبر `24` لقطة |
-| البيئات المخططة | `space`, `abstract`, `home`, `laboratory`, `city`, `ocean` |
-| provenance | مسجل في `production_manifest.json` و`visual_manifest.json` |
+| depth assets | 23 |
+| cinematic treatments | 23 |
+| الانتقالات | 19 انتقالًا عبر 23 لقطة |
+| البيئات | `space`, `home`, `abstract`, `laboratory`, `city`, `ocean` |
+| provenance | محفوظ في `production_manifest.json` و`visual_manifest.json` |
 
-أظهر الفحص البصري لـ12 إطارًا ممثلًا من FINAL، مع contact sheet للأصول الخام، فضاءً عميقًا، غرفة تخطيط دافئة خالية من الأشخاص، مختبرًا تقنيًا أزرق، شارع مدينة ممطرًا عند الغروب، ومحيطًا متحركًا. ظهرت المدينة والمحيط كمشهدين منفصلين بعد إصلاح planner العام. لم تظهر وجوه أو نساء أو شخصيات عشوائية في الإطارات الممثلة، كما لم تظهر واجهة أو prompt أو provider text داخل الصورة. حافظت المعالجة النهائية على اختلافات اللون بين المشاهد بدل تحويل parallax إلى magenta/grayscale؛ وقد تم التحقق من ذلك على الفيديو الفعلي بعد الإصلاح، لا من metadata فقط.
+تم فحص contact sheet يضم 12 إطارًا من FINAL، إضافة إلى contact sheet للأصول الخام الـ23. ظهرت بيئات الفضاء، غرفة التخطيط، المختبر، المدينة الممطرة، والمحيط بصورة متمايزة. ظهرت المدينة والمحيط كبيئتين مستقلتين، ولم تظهر وجوه أو نساء أو شخصيات عشوائية في الإطارات الممثلة، كما لم تظهر واجهة أو prompt أو provider text داخل الصورة. الألوان ليست معالجة أحادية ثابتة؛ فالداخل دافئ، والمختبر أزرق تقني، والمدينة ذات انعكاسات حضرية، والمحيط والفضاء لهما لوحات مختلفة. كما حافظ الفيديو على حركة كاميرا وانتقالات فعلية، وليس slideshow ثابتًا.
 
 ## الصوت والترجمة
 
 | العنصر | النتيجة الفعلية |
 |---|---|
-| السرد | Edge TTS، الصوت `ar-SA-HamedNeural`، اللغة `ar`، fallback=false، مدة `113.04s` |
+| narration provider | `edge-tts` |
+| Arabic voice | `ar-SA-HamedNeural` |
+| اللغة | `ar` |
+| fallback | `false` |
+| Edge attempts | `1` |
+| narration duration | `115.871973s` |
 | integrated loudness | `-16.1 LUFS`، ضمن الهدف `-16.0` |
 | true peak | `-3.7 dBFS`، تحت الحد `-1.5 dBFS` |
-| sample peak | `-3.684015 dBFS`، بلا clipping |
-| SRT | `18` cue، `2534` bytes، اجتاز completeness وword coverage |
-| العرض | bottom-centered safe area؛ لا يحجب الموضوعات البيئية الأساسية في الإطارات المفحوصة |
-
-## إصلاحات المحرك الموثقة
-
-أُصلحت ثلاث عيوب عامة ظهرت من فحص إنتاج حقيقي. أولًا، أصبح prompt البيئي يقدّم البيئة والأشياء والـshot detail والـpalette والـtreatment والـdepth ضمن core لا يُحذف بالـtoken budget، مع إزالة عبارات النفي التي كانت تعيد تحفيز صور portrait في المشاهد غير البشرية. ثانيًا، أُضيف negative prompt ديناميكي لمسار Stable Diffusion المحلي عندما لا يطلب السيناريو شخصًا صراحة. ثالثًا، أصبح parallax يستخدم `yuv444p` قبل `maskedmerge` للحفاظ على chroma، مع regression يثبت اللون وعدم التجمد. وأخيرًا، أصبح planner يحافظ على الجمل السردية كوحدات مشهد مستقلة عندما يسمح `max_scenes`، فلا تُدمج بيئتان مختلفتان مثل المدينة والمحيط في مشهد واحد.
+| sample peak | `-3.711774 dBFS`، بلا clipping |
+| SRT | 21 cue، `2655` bytes، واكتمال ناجح |
+| subtitle placement | bottom-centered safe area، بلا حجب للموضوع البيئي الرئيسي في الإطارات المفحوصة |
+| music/ambient | provenance مسجل، وfallback=false |
 
 ## الاختبارات وGitHub
 
-نجحت suite المستودع الكاملة: **56 passed, 7 warnings**. التحذيرات خارجية ومحصورة في deprecation warnings من pydub/Pillow، ولم تفشل أي بوابة. كما نجحت الاختبارات المركزة الخاصة بـplanner وcinematic/parallax والحركة والـvisual preflight.
+نجحت اختبارات TTS المركزة واختبارات provider adapters بنتيجة **7 passed, 7 warnings**. ثم نجحت suite المستودع الكاملة بنتيجة **58 passed, 7 warnings**. التحذيرات خارجية ومحصورة في Syntax/Deprecation warnings من pydub وPillow، ولم تفشل أي بوابة. مرّ `git diff --check`.
 
-التنفيذ الإنتاجي النهائي تم من commit الكود:
+تم دفع إصلاح TTS إلى GitHub في commit:
 
-`a4eb9d100e619d79dd635bfcdf319780eb7d4d2a`
+`175f6ca5dbd739a92cc751b5b9ccb45be28ed74d`
 
-تم التحقق مباشرة من GitHub API أن `origin/main` يطابق هذا الـSHA قبل commit وثيقة الإثبات. لا يحتوي المستودع على MP4 أو contact sheets المولدة؛ تبقى الأدلة الثقيلة خارج Git، بينما تحفظ هذه الوثيقة المسارات والـhashes والنتائج القابلة للتدقيق.
+وبعد ذلك تم دفع هذه الوثيقة نفسها إلى `main` بعد commit الكود المختبر `175f6ca5dbd739a92cc751b5b9ccb45be28ed74d`. وتم التحقق مباشرة بعد الدفع من SHA المستودع في GitHub ومن أن `local SHA = origin/main SHA`، مع بقاء شجرة العمل نظيفة. ويظهر commit التوثيق النهائي في سجل `main` على GitHub.
+
+تم التحقق من أن شجرة العمل لا تحتوي تغييرات غير ملتزم بها، وأن `local SHA = origin/main SHA` بعد كل عملية دفع. لا يحتوي المستودع على MP4 أو contact sheets مولدة؛ تحفظ الوثيقة المسارات والـhashes والنتائج، بينما يبقى الفيديو المرفق خارج Git كartifact إنتاجي.
 
 ## النتيجة
 
-المحرك اجتاز بوابة القبول لهذا التحقق العام: **Browser Chat → فهم السيناريو → تخطيط مشاهد وبيئات مستقلة → توجيه بصري → Pollinations حقيقي → depth/parallax وحركة وانتقالات → Edge Arabic narration → audio mix → subtitles → mastering → QC → FINAL MP4**.
+اجتاز AURELIA Maker بوابة القبول المطلوبة: **Browser Chat → فهم السيناريو → تخطيط المشاهد → توجيه البيئات واللقطات → Pollinations الحقيقي → depth/parallax والحركة والانتقالات → Edge Arabic Neural narration → mix → subtitles → edit → color → master → QC → delivery → FINAL MP4**.

@@ -1,0 +1,98 @@
+name: AURELIA Maker — Canonical Gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "aurelia/**"
+      - "web/**"
+      - "scripts/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - ".replit"
+      - ".github/workflows/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "aurelia/**"
+      - "web/**"
+      - "scripts/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - ".replit"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canonical-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      AURELIA_PRODUCTION_MODE: "1"
+      AURELIA_FORCE_FALLBACK: "0"
+      AURELIA_ALLOW_DEGRADED_TTS: "0"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg espeak-ng curl
+
+      - name: Install authoritative requirements
+        run: python -m pip install --quiet -r requirements.txt
+
+      - name: Python compile
+        run: python -m compileall -q aurelia scripts
+
+      - name: Regression suite
+        run: pytest -q tests/
+
+      - name: Canonical launcher syntax
+        run: |
+          bash -n scripts/start-canonical.sh
+          bash -n scripts/start-api-with-canonical.sh
+          bash -n scripts/build-production.sh
+
+      - name: Canonical Browser Chat smoke test
+        run: |
+          python -m aurelia.generate serve --host 127.0.0.1 --port 8765 >/tmp/aurelia-canonical.log 2>&1 &
+          PID=$!
+          trap 'kill $PID 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8765/api/health >/tmp/health.json; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8765/api/health
+          curl -fsS http://127.0.0.1:8765/api/status >/tmp/status.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          health = json.loads(Path('/tmp/health.json').read_text())
+          status = json.loads(Path('/tmp/status.json').read_text())
+          assert health.get('status') == 'ok', health
+          assert status.get('primary') != 'pillow-fallback', status
+          print('Canonical health/status OK')
+          print(json.dumps(status, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Browser Chat UI smoke test
+        run: |
+          curl -fsS http://127.0.0.1:8765/ -o /tmp/index.html
+          grep -qi '<html' /tmp/index.html
+          grep -qi 'AURELIA' /tmp/index.html
+          echo 'Browser Chat root UI OK'

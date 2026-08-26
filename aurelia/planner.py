@@ -95,10 +95,11 @@ def plan_scenes(script_text: str, min_scenes: int = 3, max_scenes: int = 20) -> 
         ) and len(p) > 30
     ]
 
-    # Use genuine sentence boundaries as narrative units. For a long script,
-    # group roughly two units per scene so pacing scales with story length
-    # instead of collapsing everything into one paragraph scene. The resulting
-    # target is derived from the script, not from an episode ID or fixed count.
+    # Use genuine sentence boundaries as narrative units. Keep semantic
+    # sentences as independent scene candidates whenever the script fits the
+    # configured maximum; merging two different locations into one scene makes
+    # title-first directing lose the later environment. Only longer scripts
+    # beyond max_scenes are grouped below, preserving the existing hard bound.
     sentence_units: list[str] = []
     for paragraph in raw_paragraphs:
         sentence_units.extend(
@@ -106,7 +107,7 @@ def plan_scenes(script_text: str, min_scenes: int = 3, max_scenes: int = 20) -> 
             for part in re.split(r"(?<=[.!?؟])\s+", paragraph)
             if len(part.strip()) >= 8
         )
-    adaptive_target = max(min_scenes, min(max_scenes, (len(sentence_units) + 1) // 2))
+    adaptive_target = max(min_scenes, min(max_scenes, len(sentence_units)))
     if len(filtered) < adaptive_target:
         if len(sentence_units) >= adaptive_target:
             target_groups = min(adaptive_target, len(sentence_units))

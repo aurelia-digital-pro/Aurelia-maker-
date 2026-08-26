@@ -4,7 +4,6 @@ import pytest
 
 from aurelia.acceptance_authority import (
     PRODUCTION_COMPLETE_STATE,
-    PENDING_STATE,
     build_local_proof,
     mark_github_success,
     validate_github_success,
@@ -76,30 +75,71 @@ def test_stale_or_mismatched_proof_is_rejected(tmp_path, field, value):
     assert reason
 
 
-def test_pending_state_constant_is_distinct_from_success():
-    assert PENDING_STATE != "COMPLETED"
+def test_production_candidate_state_is_distinct_from_success():
+    assert PRODUCTION_COMPLETE_STATE != "COMPLETED"
 
 
 def test_workflow_requires_authoritative_gitHub_gate():
     root = Path(__file__).parents[2]
     workflow = (root / ".github/workflows/production-e2e-test.yml").read_text(encoding="utf-8")
-    assert 'AURELIA_GITHUB_AUTHORITATIVE: "1"' in workflow
     assert "proof['accepted'] is False" in workflow
     assert "proof.update({" in workflow
     assert "'github_conclusion': 'success'" in workflow
     assert "assert proof['commit_sha'] == os.environ['GITHUB_SHA']" in workflow
+    assert "'PRODUCTION_COMPLETE', 'COMPLETED', 'FAILED', 'STOPPED'" in workflow
+    assert "Production failed: {job.status}" in workflow
 
 
-def test_browser_chat_only_opens_final_after_github_success():
+def test_browser_chat_opens_final_after_factory_completion_without_ci_dependency():
     root = Path(__file__).parents[2]
     app = (root / "web/app.js").read_text(encoding="utf-8")
-    guard = 'job.status === "COMPLETED" && job.github_conclusion === "success" && job.github_run_id'
-    assert guard in app
-    assert 'job.status === "AWAITING_GITHUB_ACTIONS"' in app
+    assert 'if (job.status === "COMPLETED")' in app
+    assert 'job.status === "COMPLETED" && job.github_conclusion' not in app
+    assert 'AWAITING_GITHUB_ACTIONS' not in app
 
 
-def test_server_video_endpoint_requires_completed_job_and_github_message():
+def test_server_video_endpoint_requires_completed_factory_job():
     root = Path(__file__).parents[2]
     server = (root / "aurelia/server.py").read_text(encoding="utf-8")
     assert 'job.status != "COMPLETED"' in server
-    assert "GitHub Actions acceptance is required" in server
+    assert "Video not ready" in server
+    assert "GitHub Actions acceptance is required" not in server
+
+
+def test_factory_success_state_is_independent_of_github(monkeypatch, tmp_path):
+    from aurelia.factory_runner import FactoryRunner
+
+    script = tmp_path / "script.txt"
+    script.write_text("Title: Independent\n\nA valid production script.", encoding="utf-8")
+    runner = FactoryRunner(tmp_path / "factory")
+
+    def succeed(job, script_path, profile):
+        job.status = "COMPLETED"
+        job.final_mp4 = str(tmp_path / "factory" / "final.mp4")
+        return {"acceptance_state": "COMPLETED", "final_mp4": job.final_mp4}
+
+    monkeypatch.setattr(runner, "run_episode_production", succeed)
+    job = runner.execute("0007", profile="youtube", script_path=script)
+    assert job.status == "COMPLETED"
+
+
+def test_factory_failure_remains_nonzero_and_failed(monkeypatch, tmp_path):
+    from aurelia.factory_runner import FactoryRunner
+
+    script = tmp_path / "script.txt"
+    script.write_text("Title: Failure\n\nA valid production script.", encoding="utf-8")
+    runner = FactoryRunner(tmp_path / "factory")
+
+    def fail(job, script_path, profile):
+        raise RuntimeError("MASTER failed")
+
+    monkeypatch.setattr(runner, "run_episode_production", fail)
+    try:
+        runner.execute("0008", profile="youtube", script_path=script)
+    except RuntimeError as exc:
+        assert str(exc) == "MASTER failed"
+    else:
+        raise AssertionError("Factory failure was incorrectly converted to success")
+    failed = next(iter(runner.jobs.values()))
+    assert failed.status == "FAILED"
+    assert failed.error == "MASTER failed"

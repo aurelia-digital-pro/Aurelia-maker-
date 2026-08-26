@@ -47,6 +47,9 @@ class VisualCheckpoint:
         if not record:
             return False
         path = Path(record.get("path", ""))
+        expected = Path(expected_path)
+        if path.resolve() != expected.resolve():
+            return False
         if not path.is_file() or path.stat().st_size < 1000:
             return False
         # Verify SHA256 integrity

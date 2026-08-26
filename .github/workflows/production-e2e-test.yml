@@ -36,7 +36,6 @@ jobs:
     env:
       AURELIA_FORCE_FALLBACK: "0"
       AURELIA_PRODUCTION_MODE: "1"
-      AURELIA_GITHUB_AUTHORITATIVE: "1"
 
     steps:
       - name: Checkout
@@ -244,15 +243,15 @@ jobs:
               job = runner.jobs.get(job_id)
               if job is None:
                   raise RuntimeError('Job disappeared')
-              if job.status in {'COMPLETED', 'FAILED'}:
+              if job.status in {'PRODUCTION_COMPLETE', 'COMPLETED', 'FAILED', 'STOPPED'}:
                   break
               print(f'  {job.stage} ({job.progress:.0f}%)', flush=True)
               time.sleep(2.0)
 
           job = runner.jobs[job_id]
-          if job.status != 'COMPLETED':
+          if job.status not in {'PRODUCTION_COMPLETE', 'COMPLETED'}:
               print('\n'.join(job.logs[-30:]))
-              raise RuntimeError(f'Production failed: {job.error}')
+              raise RuntimeError(f'Production failed: {job.status} — {job.error}')
 
           final = Path(job.final_mp4)
           assert final.is_file(), f'FINAL MP4 not found: {final}'
@@ -300,9 +299,14 @@ jobs:
           shutil.copy2(final, dest)
 
           proof = {
-              'accepted': True,
+              'accepted': False,
+              'acceptance_state': 'PRODUCTION_COMPLETE',
+              'production_completed': True,
               'episode_id': episode_id,
               'job_id': job_id,
+              'commit_sha': os.environ.get('GITHUB_SHA', ''),
+              'github_run_id': os.environ.get('GITHUB_RUN_ID', ''),
+              'github_conclusion': '',
               'script': str(script_path),
               'artifact': str(dest),
               'sha256': hashlib.sha256(dest.read_bytes()).hexdigest(),

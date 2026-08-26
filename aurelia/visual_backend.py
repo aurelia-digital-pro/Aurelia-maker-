@@ -228,6 +228,7 @@ def generate_visual(
     visual_note: str = "",
     run_id: str = "",
     logger: Any | None = None,
+    shot_index: int | None = None,
 ) -> dict[str, Any]:
     """Generate one scene visual.
 
@@ -242,9 +243,11 @@ def generate_visual(
             "AURELIA_PRODUCTION_MODE=1. Production Acceptance requires a real visual provider."
         )
 
+    shot_label = f"Scene {scene_index + 1}" if shot_index is None else f"Scene {scene_index + 1} shot {shot_index}"
+
     def _log(msg: str) -> None:
         if logger is not None:
-            logger(msg)
+            logger(msg.replace(f"Scene {scene_index + 1}", shot_label, 1))
 
     cfg      = _cfg()
     img_cfg  = cfg.get("image", cfg.get("visual", {}))
@@ -364,6 +367,7 @@ def generate_visual(
         "path":           str(output_path.resolve()),
         "generated_at":   datetime.now(timezone.utc).isoformat(),
         "scene_index":    scene_index,
+        "shot_index":     shot_index,
         "run_id":         run_id,
     }
 

@@ -290,6 +290,7 @@ class EpisodeProduction:
                         scene.index, scene.title, scene.text, path,
                         direction=scene.direction, width=512, height=512,
                         visual_note="", run_id=self._run_id, logger=self._emit,
+                        shot_index=shot_idx,
                     )
                     checkpoint.mark_done(
                         scene.index, shot_idx, path, prov.get("backend", ""), prov
@@ -361,7 +362,7 @@ class EpisodeProduction:
                             scene.index, scene.title, scene.text, path,
                             direction=shot_direction, width=512, height=512,
                             visual_note=visual_note, run_id=self._run_id,
-                            logger=self._emit,
+                            logger=self._emit, shot_index=shot_idx,
                         )
                         checkpoint.mark_done(
                             scene.index, shot_idx, path, prov.get("backend", ""), prov

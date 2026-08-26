@@ -21,11 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .acceptance_authority import (
-    PENDING_STATE,
-    build_local_proof,
-    current_commit_sha,
-)
+from .acceptance_authority import build_local_proof, current_commit_sha
 from .episode_engine import EpisodeProduction
 from .production_contract import PRODUCTION_STAGES
 from .production_logger import ProductionLogger
@@ -812,15 +808,12 @@ class FactoryRunner:
             source_text_sha256=source_sha256,
         )
         self._set_stage(job, "DELIVERY", 100.0)
-        # Neither local Browser Chat nor the production subprocess itself can
-        # attest the final GitHub Actions conclusion. Keep this as a candidate
-        # result until an external workflow completes every verification gate.
-        job.status = PENDING_STATE
+        # The factory lifecycle is independent of the CI process that may
+        # validate it. Final artifact validation has already completed above;
+        # never wait for, poll, or require GitHub Actions from this worker.
+        job.status = "COMPLETED"
         job.metadata["acceptance_state"] = job.status
-        logger.info(
-            "[FACTORY] PRODUCTION_COMPLETE — awaiting GitHub Actions "
-            f"success for commit {commit_sha or '<unknown>'}"
-        )
+        logger.info(f"[FACTORY] PRODUCTION_COMPLETE — FINAL MP4: {job.final_mp4}")
 
         return {
             "job_id":    job.job_id,
@@ -828,7 +821,7 @@ class FactoryRunner:
             "title":     title,
             "language":  language,
             "final_mp4": job.final_mp4,
-            "download_url": job.metadata["download_url"] if job.status == "COMPLETED" else "",
+            "download_url": job.metadata["download_url"],
             "acceptance_state": job.status,
             "commit_sha": commit_sha,
             "artifact_sha256": artifact_sha256,

@@ -13,10 +13,8 @@ from pathlib import Path
 from typing import Any
 
 
-PENDING_STATE = "AWAITING_GITHUB_ACTIONS"
 PRODUCTION_COMPLETE_STATE = "PRODUCTION_COMPLETE"
 SUCCESS_STATE = "COMPLETED"
-FAILURE_STATES = {"FAILED", "CANCELLED", "CANCELLING"}
 
 
 def current_commit_sha(root: str | Path) -> str:
@@ -32,16 +30,6 @@ def current_commit_sha(root: str | Path) -> str:
         ).strip()
     except (OSError, subprocess.CalledProcessError):
         return ""
-
-
-def github_authoritative_run() -> bool:
-    """Whether this process is the production process inside GitHub Actions."""
-    return (
-        os.environ.get("AURELIA_GITHUB_AUTHORITATIVE") == "1"
-        and os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
-        and bool(os.environ.get("GITHUB_SHA", "").strip())
-        and bool(os.environ.get("GITHUB_RUN_ID", "").strip())
-    )
 
 
 def build_local_proof(

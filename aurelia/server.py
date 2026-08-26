@@ -262,7 +262,7 @@ def get_job(job_id: str):
 def get_job_video(job_id: str):
     job = runner.jobs.get(job_id)
     if not job or job.status != "COMPLETED" or not job.final_mp4:
-        return {"error": "Video not ready: GitHub Actions acceptance is required"}
+        return {"error": "Video not ready: Factory validation is required"}
     path = Path(job.final_mp4).resolve()
     if not path.is_file():
         return {"error": "Video artifact not found"}

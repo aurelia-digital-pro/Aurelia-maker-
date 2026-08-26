@@ -134,7 +134,13 @@ class EdgeTTSProvider(AudioProvider):
             raise RuntimeError(f"Production TTS requires Edge Neural provider: {reason}")
 
         last_error = ""
-        with tempfile.TemporaryDirectory(prefix="aurelia-edge-tts-") as tmp:
+        attempt_errors: list[str] = []
+        # Keep the temporary media on the same filesystem as the destination so
+        # the final atomic replace cannot fail because /tmp and the output
+        # volume are mounted separately.
+        with tempfile.TemporaryDirectory(
+            prefix=".aurelia-edge-tts-", dir=str(output_path.parent)
+        ) as tmp:
             source_mp3 = Path(tmp) / "narration.mp3"
             converted_wav = Path(tmp) / "narration.wav"
             for attempt in range(1, self.max_attempts + 1):
@@ -152,7 +158,10 @@ class EdgeTTSProvider(AudioProvider):
                         check=False,
                     )
                     if result.returncode != 0 or not source_mp3.is_file() or source_mp3.stat().st_size < 500:
-                        last_error = (result.stderr or result.stdout or "empty Edge TTS output")[-1000:]
+                        detail = (result.stderr or result.stdout or "empty Edge TTS output").strip()
+                        last_error = (
+                            f"edge-tts subprocess exit={result.returncode}: {detail}"
+                        )[-1000:]
                         raise RuntimeError(last_error)
                     convert = subprocess.run(
                         [
@@ -166,7 +175,10 @@ class EdgeTTSProvider(AudioProvider):
                         check=False,
                     )
                     if convert.returncode != 0 or not converted_wav.is_file() or converted_wav.stat().st_size < 500:
-                        last_error = (convert.stderr or "Edge TTS WAV conversion failed")[-1000:]
+                        detail = (convert.stderr or "empty converted WAV output").strip()
+                        last_error = (
+                            f"ffmpeg WAV conversion exit={convert.returncode}: {detail}"
+                        )[-1000:]
                         raise RuntimeError(last_error)
                     os.replace(converted_wav, output_path)
                     metrics = self._probe_audio(output_path)
@@ -187,12 +199,24 @@ class EdgeTTSProvider(AudioProvider):
                         "pitch": "-2Hz",
                     }
                     return output_path
+                except subprocess.TimeoutExpired:
+                    last_error = (
+                        f"edge-tts subprocess timed out after {self.timeout_seconds}s"
+                    )
+                    attempt_errors.append(f"attempt {attempt}: {last_error}")
+                    if attempt < self.max_attempts:
+                        time.sleep(min(2.0 * attempt, 5.0))
                 except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                    last_error = str(exc)[-1000:]
+                    last_error = str(exc).strip() or exc.__class__.__name__
+                    attempt_errors.append(f"attempt {attempt}: {last_error}")
                     if attempt < self.max_attempts:
                         time.sleep(min(2.0 * attempt, 5.0))
 
-        reason = f"Edge TTS failed after {self.max_attempts} attempts: {last_error}"
+        history = "; ".join(attempt_errors[-self.max_attempts:])
+        reason = (
+            f"Edge TTS failed after {self.max_attempts} attempts: {last_error}"
+            + (f" | attempts: {history}" if history else "")
+        )
         if self.allow_degraded and os.environ.get("AURELIA_PRODUCTION_MODE", "0") != "1":
             return self._degraded_espeak(text, output_path, lang, reason)
         raise RuntimeError(reason)

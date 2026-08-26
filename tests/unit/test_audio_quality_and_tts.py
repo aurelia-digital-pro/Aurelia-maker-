@@ -20,6 +20,49 @@ def test_edge_tts_fails_loudly_when_unavailable(monkeypatch, tmp_path: Path):
         provider.generate("هذا اختبار صوت عربي", tmp_path / "narration.wav", language="ar")
 
 
+def test_edge_tts_reports_timeout_attempts(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        "aurelia.providers.audio.shutil.which",
+        lambda name: "/fake/edge-tts" if name == "edge-tts" else None,
+    )
+    monkeypatch.setattr("aurelia.providers.audio.time.sleep", lambda _seconds: None)
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("/fake/edge-tts", 10)
+
+    monkeypatch.setattr("aurelia.providers.audio.subprocess.run", timeout)
+    provider = EdgeTTSProvider(
+        allow_degraded=False, max_attempts=2, timeout_seconds=10
+    )
+    with pytest.raises(RuntimeError, match=r"timed out.*attempt 1.*attempt 2"):
+        provider.generate("هذا اختبار timeout", tmp_path / "narration.wav", language="ar")
+
+
+def test_synthesize_script_passes_complete_text_to_edge(monkeypatch, tmp_path: Path):
+    from aurelia.tts import synthesize_script
+
+    source = "Title: اختبار\nLanguage: ar\n\nهذه جملة عربية كاملة. وهذه جملة ثانية."
+    captured = {}
+
+    def fake_generate(self, text, output, language="auto", **_kwargs):
+        captured.update(text=text, output=Path(output), language=language)
+        self.provenance = {"provider": "edge-tts", "fallback": False}
+        return Path(output)
+
+    monkeypatch.setattr(
+        "aurelia.providers.audio.EdgeTTSProvider.generate", fake_generate
+    )
+    result = synthesize_script(source, tmp_path / "narration.wav", language="ar")
+
+    assert captured == {
+        "text": source,
+        "output": tmp_path / "narration.wav",
+        "language": "ar",
+    }
+    assert result["provider"] == "edge-tts"
+    assert result["fallback"] is False
+
+
 def test_degraded_tts_requires_explicit_opt_in(monkeypatch, tmp_path: Path):
     real_which = __import__("shutil").which
     monkeypatch.setattr(

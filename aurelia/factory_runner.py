@@ -380,6 +380,7 @@ class FactoryRunner:
             "script": str(script_path),
             "text": production.load_script(),
             "episode": job.episode_id,
+            "episode_id": job.episode_id,
             "job_id": job.job_id,
             "title": title,
             "language": language,

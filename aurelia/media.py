@@ -21,8 +21,13 @@ def _require_file(path: str | Path, label: str) -> Path:
     return p
 
 
-def _run(args: list[str], output: str | Path | None = None) -> None:
-    result = run_ffmpeg(args)
+def _run(
+    args: list[str],
+    output: str | Path | None = None,
+    *,
+    stage: str = "media",
+) -> None:
+    result = run_ffmpeg(args, stage=stage, output_path=output)
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg command failed:\n{' '.join(args)}\n{result.stderr.strip()}")
     if output is not None:
@@ -43,6 +48,12 @@ def probe_duration(path: str | Path) -> float:
 def probe_has_audio(path: str | Path) -> bool:
     path = _require_file(path, "Media input")
     result = run_ffprobe(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=index", "-of", "csv=p=0", str(path)])
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def probe_has_video(path: str | Path) -> bool:
+    path = _require_file(path, "Media input")
+    result = run_ffprobe(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=index", "-of", "csv=p=0", str(path)])
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
@@ -88,61 +99,102 @@ def assemble_cinematic_clips(
     output: str | Path,
     transition_duration: float = 0.6,
 ) -> Path:
-    """Assemble rendered shots with real cut/dissolve/fade transitions.
+    """Assemble all rendered shots in one validated FFmpeg filter graph.
 
-    ``transitions`` contains one transition for every boundary between clips.
-    Cut boundaries use the concat demuxer; non-cut boundaries use FFmpeg's
-    xfade filter so the transition is present in the encoded video, not only
-    in metadata or logs.
+    Cut runs are concatenated inside the graph. Non-cut boundaries use xfade
+    between those groups. This preserves real transitions while avoiding the
+    old O(number-of-shots) chain of intermediate encodes that made EDIT slow
+    and vulnerable to CI termination.
     """
     if not clips:
         raise ValueError("No clips supplied")
     normalised = [_require_file(c, "Cinematic clip") for c in clips]
+    durations: list[float] = []
+    for clip in normalised:
+        if not probe_has_video(clip):
+            raise RuntimeError(f"EDIT input has no video stream: {clip}")
+        duration = probe_duration(clip)
+        if duration <= 0.0:
+            raise RuntimeError(f"EDIT input has invalid duration: {clip}")
+        durations.append(duration)
+
     boundary_transitions = list(transitions or [])
-    boundary_transitions.extend(["cut"] * max(0, len(normalised) - 1 - len(boundary_transitions)))
-    current = normalised[0]
+    boundary_transitions.extend(
+        ["cut"] * max(0, len(normalised) - 1 - len(boundary_transitions))
+    )
+    transition_groups: list[list[int]] = [[0]]
+    for index, transition in enumerate(boundary_transitions[: len(normalised) - 1]):
+        if str(transition).strip().lower() in {"cut", "none", ""}:
+            transition_groups[-1].append(index + 1)
+        else:
+            transition_groups.append([index + 1])
+
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    graph_parts: list[str] = []
+    for index in range(len(normalised)):
+        graph_parts.append(
+            f"[{index}:v]settb=AVTB,setpts=PTS-STARTPTS,fps=24:round=near[v{index}]"
+        )
 
-    for index, next_clip in enumerate(normalised[1:]):
-        transition = str(boundary_transitions[index]).strip().lower()
-        if transition in {"cut", "none", ""}:
-            step_output = output_path.parent / f".cinematic-step-{index:03d}.mp4"
-            concat_clips([current, next_clip], step_output)
+    group_labels: list[str] = []
+    group_durations: list[float] = []
+    for group_index, group in enumerate(transition_groups):
+        label = f"g{group_index}"
+        group_labels.append(label)
+        group_durations.append(sum(durations[index] for index in group))
+        if len(group) == 1:
+            graph_parts.append(f"[v{group[0]}]settb=AVTB,setpts=PTS-STARTPTS[{label}]")
         else:
-            duration_a = probe_duration(current)
-            duration_b = probe_duration(next_clip)
-            overlap = min(max(float(transition_duration), 0.1), duration_a / 3.0, duration_b / 3.0)
-            xfade_name = {
-                "dissolve": "fade",
-                "crossfade": "fade",
-                "fade_in": "fade",
-                "fade_out": "fadeblack",
-                "fade": "fadeblack",
-                "light": "fadewhite",
-                "light_transition": "fadewhite",
-                "wipe": "wiperight",
-                "wiperight": "wiperight",
-                "slideleft": "slideleft",
-            }.get(transition, "fade")
-            step_output = output_path.parent / f".cinematic-step-{index:03d}.mp4"
-            graph = (
-                f"[0:v]settb=AVTB,setpts=PTS-STARTPTS[v0];"
-                f"[1:v]settb=AVTB,setpts=PTS-STARTPTS[v1];"
-                f"[v0][v1]xfade=transition={xfade_name}:duration={overlap:.4f}:"
-                f"offset={max(0.0, duration_a - overlap):.4f},format=yuv420p[v]"
+            graph_parts.append(
+                "".join(f"[v{index}]" for index in group)
+                + f"concat=n={len(group)}:v=1:a=0,settb=AVTB,setpts=PTS-STARTPTS[{label}]"
             )
-            _run([
-                "-y", "-hide_banner", "-loglevel", "error",
-                "-i", str(current), "-i", str(next_clip),
-                "-filter_complex", graph, "-map", "[v]", "-an",
-                "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                "-pix_fmt", "yuv420p", str(step_output),
-            ], step_output)
-        current = step_output
 
-    if current != output_path:
-        _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(current), "-c", "copy", str(output_path)], output_path)
+    current_label = group_labels[0]
+    current_duration = group_durations[0]
+    for group_index in range(1, len(group_labels)):
+        boundary_index = transition_groups[group_index][0] - 1
+        transition = str(boundary_transitions[boundary_index]).strip().lower()
+        if transition in {"cut", "none", ""}:
+            transition = "fade"
+        duration_b = group_durations[group_index]
+        overlap = min(
+            max(float(transition_duration), 0.1),
+            current_duration / 3.0,
+            duration_b / 3.0,
+        )
+        xfade_name = {
+            "dissolve": "fade",
+            "crossfade": "fade",
+            "fade_in": "fade",
+            "fade_out": "fadeblack",
+            "fade": "fadeblack",
+            "light": "fadewhite",
+            "light_transition": "fadewhite",
+            "wipe": "wiperight",
+            "wiperight": "wiperight",
+            "slideleft": "slideleft",
+        }.get(transition, "fade")
+        next_label = f"x{group_index}"
+        graph_parts.append(
+            f"[{current_label}][{group_labels[group_index]}]"
+            f"xfade=transition={xfade_name}:duration={overlap:.4f}:"
+            f"offset={max(0.0, current_duration - overlap):.4f}[{next_label}]"
+        )
+        current_label = next_label
+        current_duration += duration_b - overlap
+
+    args = ["-y", "-hide_banner", "-loglevel", "error"]
+    for clip in normalised:
+        args += ["-i", str(clip)]
+    args += [
+        "-filter_complex", ";".join(graph_parts) + f";[{current_label}]format=yuv420p[vout]",
+        "-map", "[vout]", "-an", "-c:v", "libx264", "-preset", "medium",
+        "-crf", "18", "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-r", "24",
+        str(output_path),
+    ]
+    _run(args, output_path, stage="EDIT/assemble")
     return output_path
 
 

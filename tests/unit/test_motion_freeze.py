@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import re
 import subprocess
+
+import pytest
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from aurelia.media import pad_video_to_duration
+import aurelia.media as media
+from aurelia.media import assemble_cinematic_clips, pad_video_to_duration
 from aurelia.transitions import TransitionSpec, TransitionType, apply_transition_ffmpeg
 from aurelia.visuals import CinematicVisualEngine
 
@@ -110,6 +113,39 @@ def test_transition_no_freeze_crossfade(tmp_path: Path):
         output,
     )
     assert not [x for x in _freeze_durations(output) if x > 0.5]
+
+
+def test_edit_rejects_missing_clip_before_ffmpeg(tmp_path: Path):
+    with pytest.raises(FileNotFoundError, match="Cinematic clip"):
+        assemble_cinematic_clips(
+            [tmp_path / "missing.mp4"], [], tmp_path / "assembled.mp4"
+        )
+
+
+def test_edit_assembles_all_shots_in_one_ffmpeg_graph(tmp_path: Path, monkeypatch):
+    clips = [
+        _render(tmp_path, "edit-first", "tracking", 1.0, 1.02),
+        _render(tmp_path, "edit-second", "push", 1.0, 1.05),
+        _render(tmp_path, "edit-third", "pull", 1.08, 1.0),
+        _render(tmp_path, "edit-fourth", "slow_drift", 1.0, 1.01),
+    ]
+    calls = []
+    real_run_ffmpeg = media.run_ffmpeg
+
+    def spy(args, **kwargs):
+        calls.append((args, kwargs))
+        return real_run_ffmpeg(args, **kwargs)
+
+    monkeypatch.setattr(media, "run_ffmpeg", spy)
+    output = tmp_path / "assembled.mp4"
+    assemble_cinematic_clips(clips, ["cut", "dissolve", "cut"], output)
+
+    assert output.is_file() and output.stat().st_size > 1000
+    assert len(calls) == 1
+    assert calls[0][1]["stage"] == "EDIT/assemble"
+    assert calls[0][1]["output_path"] == output
+    graph = " ".join(calls[0][0])
+    assert graph.count("xfade=transition=fade") == 1
 
 
 def test_retime_no_freeze_for_shorter_edit(tmp_path: Path):

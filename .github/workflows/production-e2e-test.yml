@@ -6,12 +6,12 @@ on:
       episode_id:
         description: "4-digit episode ID (e.g. 0001)"
         required: false
-        default: "0099"
+        default: "0003"
         type: string
       script_path:
         description: "Path to representative AURELIA Maker introduction script"
         required: false
-        default: "scripts/aurelia-maker-introduction-ar.txt"
+        default: "scripts/episode-0001-arabic-test.txt"
         type: string
       language:
         description: "Language (ar or en)"
@@ -36,6 +36,7 @@ jobs:
     env:
       AURELIA_FORCE_FALLBACK: "0"
       AURELIA_PRODUCTION_MODE: "1"
+      AURELIA_GITHUB_AUTHORITATIVE: "1"
 
     steps:
       - name: Checkout
@@ -199,8 +200,8 @@ jobs:
 
       - name: Run FULL end-to-end production test
         env:
-          ACCEPTANCE_EPISODE: ${{ inputs.episode_id || '0099' }}
-          ACCEPTANCE_SCRIPT: ${{ inputs.script_path || 'scripts/aurelia-maker-introduction-ar.txt' }}
+          ACCEPTANCE_EPISODE: ${{ inputs.episode_id || '0003' }}
+          ACCEPTANCE_SCRIPT: ${{ inputs.script_path || 'scripts/episode-0001-arabic-test.txt' }}
         run: |
           set -o pipefail
           echo "[E2E] Episode: ${ACCEPTANCE_EPISODE}"
@@ -216,8 +217,8 @@ jobs:
           from pathlib import Path
 
           ROOT = Path('.')
-          episode_id = os.environ.get('ACCEPTANCE_EPISODE', '0099').strip().zfill(4)
-          script_path = ROOT / os.environ.get('ACCEPTANCE_SCRIPT', 'scripts/aurelia-maker-introduction-ar.txt')
+          episode_id = os.environ.get('ACCEPTANCE_EPISODE', '0003').strip().zfill(4)
+          script_path = ROOT / os.environ.get('ACCEPTANCE_SCRIPT', 'scripts/episode-0001-arabic-test.txt')
 
           assert script_path.is_file(), f'Script not found: {script_path}'
           source_text = script_path.read_text(encoding='utf-8').strip()
@@ -228,7 +229,7 @@ jobs:
           from aurelia.media import validate_master
 
           runner = FactoryRunner(ROOT / 'runs' / 'e2e')
-          message = f'Create Episode {episode_id}\n{source_text}'
+          message = f'Create Episode {episode_id}\nProfile: youtube\n{source_text}'
 
           print(f'[E2E] Submitting to Chat...')
           result = handle_chat_production(runner, message)
@@ -323,7 +324,7 @@ jobs:
 
       - name: Hard artifact verification
         run: |
-          EPISODE="${{ inputs.episode_id || '0099' }}"
+          EPISODE="${{ inputs.episode_id || '0003' }}"
           case "${EPISODE}" in
             ''|*[!0-9]*) echo "Invalid episode identifier: ${EPISODE}" >&2; exit 1 ;;
           esac
@@ -346,7 +347,11 @@ jobs:
           import json
           from pathlib import Path
           proof = json.loads(Path('runs/e2e/production_proof.json').read_text())
-          assert proof['accepted'] is True
+          assert proof['accepted'] is False, 'Local production must not be final acceptance'
+          assert proof['acceptance_state'] == 'PRODUCTION_COMPLETE'
+          assert proof['production_completed'] is True
+          assert proof['commit_sha'] == __import__('os').environ['GITHUB_SHA']
+          assert proof['github_conclusion'] == ''
           assert proof['duration_seconds'] >= 25
           assert proof['size_bytes'] >= 50000
           assert proof['frame_diversity'] >= 2
@@ -384,7 +389,11 @@ jobs:
           subtitle_path = Path(manifest.get('subtitle_path', ''))
           assert subtitle_path.is_file() and subtitle_path.stat().st_size > 10, subtitle_path
           backends = [str(value) for value in visual.get('backends_used', [])]
-          assert proof['accepted'] is True
+          assert proof['accepted'] is False
+          assert proof['acceptance_state'] == 'PRODUCTION_COMPLETE'
+          assert proof['production_completed'] is True
+          assert proof['commit_sha'] == os.environ['GITHUB_SHA']
+          assert proof['github_run_id'] == os.environ['GITHUB_RUN_ID']
           assert qc['delivery_blocked'] is False
           assert not qc['fatals'], qc['fatals']
           assert visual_qc['passed'] is True, visual_qc
@@ -405,6 +414,15 @@ jobs:
           actual_sha = hashlib.sha256(artifact.read_bytes()).hexdigest()
           assert actual_sha == proof['sha256']
 
+          current_sha = os.environ['GITHUB_SHA']
+          current_run_id = os.environ['GITHUB_RUN_ID']
+          proof.update({
+              'accepted': True,
+              'acceptance_state': 'COMPLETED',
+              'github_conclusion': 'success',
+          })
+          proof_path.write_text(json.dumps(proof, indent=2, ensure_ascii=False), encoding='utf-8')
+
           qc_lines = []
           for check in qc.get('checks', []):
               marker = 'PASS' if check.get('passed') else 'FAIL'
@@ -417,8 +435,10 @@ jobs:
           |---|---|
           | Episode | `{proof['episode_id']}` |
           | Job ID | `{proof['job_id']}` |
-          | Git SHA | `{os.environ.get('GITHUB_SHA', '')}` |
-          | GitHub Actions run | [{os.environ.get('GITHUB_RUN_ID', '')}]({os.environ.get('GITHUB_SERVER_URL', '')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}) |
+          | Git SHA | `{current_sha}` |
+          | GitHub Actions run | [{current_run_id}]({os.environ.get('GITHUB_SERVER_URL', '')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{current_run_id}) |
+          | GitHub conclusion | `success` |
+          | Acceptance state | `COMPLETED` |
           | Artifact | `{proof['artifact']}` |
           | Duration | `{proof['duration_seconds']:.3f}s` |
           | Size | `{proof['size_bytes']} bytes` |

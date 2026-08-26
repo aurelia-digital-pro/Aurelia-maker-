@@ -21,6 +21,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .acceptance_authority import (
+    PENDING_STATE,
+    build_local_proof,
+    current_commit_sha,
+)
 from .episode_engine import EpisodeProduction
 from .production_contract import PRODUCTION_STAGES
 from .production_logger import ProductionLogger
@@ -90,6 +95,10 @@ def _build_production_manifest(
     return {
         "job_id":   job.job_id,
         "episode_id": job.episode_id,
+        "commit_sha": job.metadata.get("commit_sha", current_commit_sha(Path.cwd())),
+        "acceptance_state": "PRODUCTION_COMPLETE",
+        "github_run_id": "",
+        "github_conclusion": job.metadata.get("github_conclusion", ""),
         "title":    title,
         "language": language,
         "profile":  profile,
@@ -193,7 +202,10 @@ class FactoryRunner:
         job = ProductionJob(
             job_id=uuid.uuid4().hex,
             episode_id=normalized,
-            metadata={"profile": profile},
+            metadata={
+                "profile": profile,
+                "commit_sha": current_commit_sha(Path.cwd()),
+            },
         )
         if script_path is not None:
             job.metadata["script"] = str(script_path.resolve())
@@ -787,9 +799,28 @@ class FactoryRunner:
 
         job.final_mp4 = str(final_outputs["final"])
         job.metadata["download_url"] = f"/api/jobs/{job.job_id}/video"
+        commit_sha = current_commit_sha(Path.cwd())
+        artifact_sha256 = hashlib.sha256(Path(job.final_mp4).read_bytes()).hexdigest()
+        job.metadata["commit_sha"] = commit_sha
+        job.metadata["local_acceptance"] = build_local_proof(
+            job_id=job.job_id,
+            episode_id=job.episode_id,
+            commit_sha=commit_sha,
+            artifact_path=job.final_mp4,
+            artifact_sha256=artifact_sha256,
+            qc_passed=True,
+            source_text_sha256=source_sha256,
+        )
         self._set_stage(job, "DELIVERY", 100.0)
-        job.status = "COMPLETED"
-        logger.info(f"[FACTORY] COMPLETED \u2014 FINAL MP4: {job.final_mp4}")
+        # Neither local Browser Chat nor the production subprocess itself can
+        # attest the final GitHub Actions conclusion. Keep this as a candidate
+        # result until an external workflow completes every verification gate.
+        job.status = PENDING_STATE
+        job.metadata["acceptance_state"] = job.status
+        logger.info(
+            "[FACTORY] PRODUCTION_COMPLETE — awaiting GitHub Actions "
+            f"success for commit {commit_sha or '<unknown>'}"
+        )
 
         return {
             "job_id":    job.job_id,
@@ -797,7 +828,10 @@ class FactoryRunner:
             "title":     title,
             "language":  language,
             "final_mp4": job.final_mp4,
-            "download_url": job.metadata["download_url"],
+            "download_url": job.metadata["download_url"] if job.status == "COMPLETED" else "",
+            "acceptance_state": job.status,
+            "commit_sha": commit_sha,
+            "artifact_sha256": artifact_sha256,
             "outputs":   {k: str(v) for k, v in final_outputs.items()},
             "scenes":    len(production.scenes),
             "total_assets": production._total_visual_assets,

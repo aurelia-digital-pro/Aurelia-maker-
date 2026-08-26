@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -33,7 +34,7 @@ def _wait_for_job(factory, job_id: str, timeout_seconds: int = 1800):
         job = factory.jobs.get(job_id)
         if job is None:
             raise RuntimeError(f"Chat-created job disappeared: {job_id}")
-        if job.status in {"COMPLETED", "FAILED"}:
+        if job.status in {"PRODUCTION_COMPLETE", "COMPLETED", "FAILED", "STOPPED"}:
             return job
         time.sleep(1.0)
     raise TimeoutError(f"Timed out waiting for Chat-created job {job_id}")
@@ -82,7 +83,7 @@ def main() -> None:
             raise RuntimeError(f"Chat did not create a production job: {accepted}")
 
         job = _wait_for_job(factory, accepted["job_id"])
-        if job.status != "COMPLETED":
+        if job.status not in {"PRODUCTION_COMPLETE", "COMPLETED"}:
             raise RuntimeError(f"Chat production did not complete Episode {episode_id}: {job.status} — {job.error}")
 
         produced = Path(job.final_mp4).resolve()
@@ -153,14 +154,22 @@ def main() -> None:
             raise RuntimeError("Factory manifest title is not derived from the current Chat request")
 
         frame_evidence = _extract_representative_frames(final, root / "final_frames")
+        commit_sha = os.environ.get("GITHUB_SHA", "").strip()
+        run_id = os.environ.get("GITHUB_RUN_ID", "").strip()
         qc = {
-            "accepted": True,
+            "accepted": False,
+            "acceptance_state": "PRODUCTION_COMPLETE",
+            "production_completed": True,
             "episode_id": episode_id,
             "job_id": job.job_id,
+            "commit_sha": commit_sha,
+            "github_run_id": run_id,
+            "github_conclusion": "",
             "script": str(script),
             "source_text_sha256": source_sha256,
             "artifact": str(final),
             "sha256": sha,
+            "artifact_sha256": sha,
             "duration_seconds": duration,
             "size_bytes": size,
             "format": metadata.get("format_name"),

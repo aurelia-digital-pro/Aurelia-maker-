@@ -130,9 +130,10 @@ async function loadJobs() {
     jobList.innerHTML = "";
     for (const job of (data.jobs || []).slice().reverse().slice(0, 12)) {
       const li = document.createElement("li");
-      const statusClass = job.status === "COMPLETED" ? "ok" : job.status === "FAILED" ? "fail" : "running";
+      const statusClass = job.status === "COMPLETED" ? "ok" : job.status === "FAILED" ? "fail" : job.status === "AWAITING_GITHUB_ACTIONS" ? "pending" : "running";
       li.className = statusClass;
-      li.textContent = `${job.episode_id} — ${job.status} (${Math.round(job.progress || 0)}%)`;
+      const label = job.status === "AWAITING_GITHUB_ACTIONS" ? "AWAITING GITHUB ACTIONS" : job.status;
+      li.textContent = `${job.episode_id} — ${label} (${Math.round(job.progress || 0)}%)`;
       li.onclick = () => trackJob(job.job_id);
       jobList.appendChild(li);
     }
@@ -226,13 +227,17 @@ function trackJob(jobId) {
       renderQc(job);
       renderArtifacts(job);
 
-      if (job.status === "COMPLETED") {
+      if (job.status === "COMPLETED" && job.github_conclusion === "success" && job.github_run_id) {
         clearInterval(pollTimer);
         trackerStage.textContent = "COMPLETED";
         addMsg(`Episode ${job.episode_id} complete!\n` +
                `${job.total_shots || ""} shots\nFINAL MP4 ready.`, "bot");
         openJobVideo(job.job_id, job.episode_id);
         loadEpisodes();
+      } else if (job.status === "AWAITING_GITHUB_ACTIONS") {
+        clearInterval(pollTimer);
+        trackerStage.textContent = "AWAITING GITHUB ACTIONS";
+        addMsg(`Episode ${job.episode_id} production finished locally, but it is not final. Waiting for a successful GitHub Actions verification for commit ${job.commit_sha || "current"}.`, "bot");
       } else if (job.status === "FAILED") {
         clearInterval(pollTimer);
         trackerStage.textContent = "FAILED";

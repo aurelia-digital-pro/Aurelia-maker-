@@ -325,7 +325,7 @@ def mix_narration_and_music(
     args += ["-filter_complex", ";".join(filters), "-map", "0:v:0", "-map", "[aout]",
              "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
              "-t", f"{target_duration:.6f}", str(output_path)]
-    _run(args, output_path)
+    _run(args, output_path, stage="SOUND/mix")
     return output_path
 
 
@@ -339,7 +339,7 @@ def apply_color_grade(
     _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(source),
           "-vf", f"eq=contrast={contrast}:saturation={saturation}:brightness={brightness}",
           "-c:v", "libx264", "-preset", "medium", "-crf", "17",
-          "-c:a", "copy", "-pix_fmt", "yuv420p", str(output_path)], output_path)
+          "-c:a", "copy", "-pix_fmt", "yuv420p", str(output_path)], output_path, stage="COLOR/grade")
     return output_path
 
 
@@ -401,7 +401,8 @@ def burn_subtitles(source: str | Path, srt: str | Path, output: str | Path) -> P
     result = run_ffmpeg(["-y", "-hide_banner", "-loglevel", "error",
                          "-i", str(source), "-vf", subtitle_filter,
                          "-c:v", "libx264", "-preset", "medium", "-crf", "17",
-                         "-c:a", "copy", "-pix_fmt", "yuv420p", str(output_path)])
+                         "-c:a", "copy", "-pix_fmt", "yuv420p", str(output_path)],
+                        stage="SUBTITLE/burn", output_path=output_path)
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="replace")[-500:]
         raise RuntimeError(f"Subtitle burn-in failed; refusing unsubtitled delivery: {stderr}")
@@ -426,9 +427,9 @@ def master_encode(
     )
     _run(["-y", "-hide_banner", "-loglevel", "error", "-i", str(source),
           "-vf", master_filter, "-fps_mode", "cfr", "-r", str(fps),
-          "-c:v", "libx264", "-preset", "slow", "-crf", "16",
+          "-c:v", "libx264", "-preset", "medium", "-crf", "16",
           "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
-          "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output_path)], output_path)
+          "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output_path)], output_path, stage=f"MASTER/{profile}")
     return output_path
 
 

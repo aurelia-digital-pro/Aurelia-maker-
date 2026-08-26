@@ -20,6 +20,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -182,7 +183,18 @@ def list_episodes():
             for job_dir in sorted(episode_dir.glob("job-*")):
                 final_candidates = list((job_dir / "delivery").glob("*-FINAL.mp4"))
                 final = final_candidates[0] if len(final_candidates) == 1 else None
-                valid = bool(final and validate_master(final, min_duration=5.0)["passed"])
+                manifest_path = job_dir / "production_manifest.json"
+                authority_ok = False
+                if manifest_path.is_file():
+                    try:
+                        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        authority_ok = (
+                            manifest.get("acceptance_state") == "COMPLETED"
+                            and manifest.get("github_conclusion") == "success"
+                        )
+                    except (OSError, json.JSONDecodeError):
+                        authority_ok = False
+                valid = bool(authority_ok and final and validate_master(final, min_duration=5.0)["passed"])
                 jobs.append({
                     "job_id":   job_dir.name.replace("job-", ""),
                     "has_final": valid,
@@ -209,8 +221,8 @@ def list_jobs():
                 "status":       j.status,
                 "stage":        j.stage,
                 "progress":     j.progress,
-                "final_mp4":    j.final_mp4,
-                "download_url": j.metadata.get("download_url", ""),
+                "final_mp4":    j.final_mp4 if j.status == "COMPLETED" else "",
+                "download_url": j.metadata.get("download_url", "") if j.status == "COMPLETED" else "",
                 "error":        j.error,
             }
             for j in runner.jobs.values()
@@ -229,15 +241,20 @@ def get_job(job_id: str):
         "status":       job.status,
         "stage":        job.stage,
         "progress":     job.progress,
-        "final_mp4":    job.final_mp4,
-        "download_url": job.metadata.get("download_url", ""),
-        "error":        job.error,
+        "final_mp4": job.final_mp4 if job.status == "COMPLETED" else "",
+        "download_url": job.metadata.get("download_url", "") if job.status == "COMPLETED" else "",
+        "error": job.error,
+
         "logs":         job.logs[-500:],
         "scene_info":   job.metadata.get("scene_info", ""),
         "total_shots":  job.metadata.get("total_shots", 0),
-        "outputs":      job.metadata.get("outputs", {}),
+        "outputs":      job.metadata.get("outputs", {}) if job.status == "COMPLETED" else {},
         "qc":           job.metadata.get("qc", {}),
         "visual_backend": job.metadata.get("visual_backend", {}),
+        "acceptance_state": job.status,
+        "commit_sha": job.metadata.get("commit_sha", ""),
+        "github_run_id": job.metadata.get("github_run_id", ""),
+        "github_conclusion": job.metadata.get("github_conclusion", ""),
     }
 
 
@@ -245,7 +262,7 @@ def get_job(job_id: str):
 def get_job_video(job_id: str):
     job = runner.jobs.get(job_id)
     if not job or job.status != "COMPLETED" or not job.final_mp4:
-        return {"error": "Video not ready"}
+        return {"error": "Video not ready: GitHub Actions acceptance is required"}
     path = Path(job.final_mp4).resolve()
     if not path.is_file():
         return {"error": "Video artifact not found"}

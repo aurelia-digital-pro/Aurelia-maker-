@@ -3,6 +3,9 @@ from __future__ import annotations
 import shutil
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
+
+from aurelia.chat_entry import handle_chat_production
 
 import aurelia.visual_backend as visual_backend
 
@@ -74,3 +77,69 @@ def test_canonical_launchers_have_strict_python_entrypoint():
         assert 'AURELIA_PRODUCTION_MODE="${AURELIA_PRODUCTION_MODE:-1}"' in content
         assert 'AURELIA_FORCE_FALLBACK="${AURELIA_FORCE_FALLBACK:-0}"' in content
         assert 'AURELIA_ALLOW_DEGRADED_TTS="${AURELIA_ALLOW_DEGRADED_TTS:-0}"' in content
+
+
+def test_chat_path_has_one_canonical_executor_and_edge_narration():
+    chat_entry = (ROOT / "aurelia/chat_entry.py").read_text(encoding="utf-8")
+    server = (ROOT / "aurelia/server.py").read_text(encoding="utf-8")
+    episode_engine = (ROOT / "aurelia/episode_engine.py").read_text(encoding="utf-8")
+    proxy = (ROOT / "artifacts/api-server/src/routes/productions.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "runner.execute_async" in chat_entry
+    assert "handle_chat_production" in server
+    assert "provider = EdgeTTSProvider()" in episode_engine
+    assert "spawn(" not in proxy
+    assert "run_job.py" not in proxy
+    assert "independent status machine" in proxy
+    assert "all dialogue segments failed" not in "".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in (ROOT / "aurelia").rglob("*.py")
+    )
+
+
+def test_chat_entry_binds_authoritative_message_to_factory(tmp_path: Path):
+    calls: list[dict[str, object]] = []
+
+    class FakeRunner:
+        output = tmp_path
+
+        def resolve_episode_id(self, text: str) -> str | None:
+            return "0007" if "0007" in text else None
+
+        def execute_async(self, episode_id: str, *, profile: str, script_path: Path):
+            calls.append(
+                {
+                    "episode_id": episode_id,
+                    "profile": profile,
+                    "script_path": script_path,
+                }
+            )
+            return SimpleNamespace(job_id="job-chat-contract", metadata={})
+
+    source = "اكتب فيلمًا وثائقيًا عن الذكاء الاصطناعي في الطب، مع سياق تاريخي واضح وتطورات مستقبلية." \
+        " ناقش الفوائد والمخاطر والحوكمة بلغة عربية هادئة."
+    result = handle_chat_production(
+        FakeRunner(), f"أنشئ الحلقة 0007\nProfile: youtube\n{source}"
+    )
+
+    assert result["action"] == "produce"
+    assert result["job_id"] == "job-chat-contract"
+    assert result["episode_id"] == "0007"
+    assert result["profile"] == "youtube"
+    assert result["script_source"] == "chat"
+    assert len(calls) == 1
+    assert calls[0]["episode_id"] == "0007"
+    assert calls[0]["profile"] == "youtube"
+    assert Path(calls[0]["script_path"]).read_text(encoding="utf-8") == source
+
+
+def test_api_readiness_fails_closed_without_canonical_backend():
+    health = (ROOT / "artifacts/api-server/src/routes/health.ts").read_text(
+        encoding="utf-8"
+    )
+    assert "AURELIA_CANONICAL_API_URL" in health
+    assert "/api/health" in health
+    assert "AbortSignal.timeout" in health
+    assert 'res.status(503)' in health

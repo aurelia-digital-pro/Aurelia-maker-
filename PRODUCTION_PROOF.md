@@ -1,164 +1,134 @@
-# AURELIA Maker — إثبات التعافي والقبول الإنتاجي
+# AURELIA Maker — تقرير إثبات القبول الإنتاجي النهائي
 
-## 1. ROOT CAUSE
+## FINAL ARCHITECTURE
 
-فشل run السابق `32974171812` بعد أن وصل الإنتاج الحقيقي إلى `PRODUCTION_COMPLETE` و`DELIVERY 100%` وأنشأ الـFINAL MP4 ونتيجة QC. كان السبب دائرة اعتماد في state machine، وليس فشلًا في MASTER أو QC أو Delivery.
+تم توحيد النظام حول محرك إنتاج canonical واحد هو الشجرة الجذرية `aurelia/`. أزيلت الشجرة التنفيذية المكررة `aurelia-engine/` من Git، ونُقلت الوثائق التاريخية غير التنفيذية فقط إلى `docs/legacy/`. لم يعد في المستودع مسار إنتاج Python ثانٍ، أو Factory بديل، أو مشغّل TypeScript ينفذ الإنتاج، أو TTS legacy مخفي.
 
-كان `FactoryRunner.run_episode_production()` يضع الوظيفة في `AWAITING_GITHUB_ACTIONS` ويكتب:
+الواجهة المتعاقد عليها هي Browser Chat، ويصل الطلب إلى `aurelia.server` ثم `aurelia.chat_entry` ثم `FactoryRunner` ثم `ProductionPipeline` ثم `EpisodeProduction`. مسار `/api/productions` في TypeScript أصبح compatibility proxy عديم الحالة إلى canonical Python API، ولا ينشئ job map أو state machine أو subprocess خاصًا به.
 
-> `PRODUCTION_COMPLETE — awaiting GitHub Actions success for commit 553d2c6372147e129a59ce5c29ded2448f12998c`
+## CANONICAL PRODUCTION PATH
 
-ثم كان workflow نفسه ينتظر حالة `COMPLETED` فقط. لذلك ظل انتظار workflow قائمًا حتى انتهت مهلة العملية الداخلية، ثم رُفعت رسالة `RuntimeError: Production failed` بعد اكتمال الإنتاج. أصبح المسار فعليًا:
+المسار الفعلي الموحد هو:
 
 ```text
-GitHub Actions → Factory → PRODUCTION_COMPLETE
-             ↖ انتظار نجاح GitHub Actions نفسه
+Browser Chat
+  → aurelia.server
+  → chat_entry.handle_chat_production
+  → FactoryRunner
+  → ProductionPipeline / FactoryExecutor
+  → EpisodeProduction
+  → visual provider + shot checkpoints
+  → Edge TTS narration
+  → edit / color / subtitles / master
+  → artifact validation
+  → QC
+  → delivery
+  → Factory COMPLETED
+  → GitHub Actions hard verification
+  → accepted=true
 ```
 
-وهذا هو deadlock الذي أنتج الفشل بعد نحو 54 دقيقة. لم يكن رفع `timeout-minutes` علاجًا صحيحًا.
+عقود المراحل معرفة في `aurelia/production_contract.py`، ويجري التحقق من المدخلات قبل كل stage ومن مخرجاته قبل السماح بالانتقال. الناتج الناقص أو metadata-only لا يعد نجاحًا؛ يتحول إلى `FAILED` مع الاحتفاظ بالسبب الجذري.
 
-## 2. FILES CHANGED
+## WHAT WAS WRONG
 
-| الملف | التغيير |
+كشفت المواصفة الأحدث مسارين متوازيين حقيقيين. كان `artifacts/api-server/src/routes/productions.ts` يستدعي `spawn` لتشغيل `aurelia-engine/run_job.py`، وكانت تلك الشجرة تستخدم state model مختلفًا (`VALIDATED`) ومسار TTS offline مختلفًا. لذلك لم يكن نجاح Edge TTS السابق يثبت أن مسار Episode 0120 الفعلي يستخدم Edge TTS.
+
+كما كان التنفيذ السابق يحتوي دائرة اعتماد أخرى: Factory ينتظر نجاح GitHub Actions الذي يشغّل Factory نفسه. أزيل هذا الانتظار؛ GitHub يتحقق من Factory بعد اكتماله، ولا يعتمد Factory على حالة CI الحالية.
+
+ظهر في أول تشغيل بعد canonicalization، run `32994536009`، فشل مبكر عند عقدة SCRIPT لأن الحالة الابتدائية لم تكن تحتوي `episode_id` رغم أن العقدة تطلبه. لم يبدأ ذلك التشغيل أي إنتاج media/provider فعليًا. أضيف `episode_id` إلى initial state، واختُبر الإصلاح محليًا قبل التشغيل النهائي.
+
+## WHAT WAS CONSOLIDATED
+
+| المجال | الحالة الموحدة الحالية |
 |---|---|
-| `aurelia/factory_runner.py` | جعل دورة المصنع مستقلة عن GitHub Actions؛ بعد validation النهائي يصبح job `COMPLETED` ويخرج بدل الانتظار أو polling على CI. |
-| `aurelia/server.py` | جعل endpoint الفيديو يربط الجاهزية بـFactory validation، لا بشرط GitHub خارجي. |
-| `web/app.js` | Browser Chat يعرض النتيجة بعد `COMPLETED` الفعلي من Factory، ولا يعلق على حالة انتظار CI. |
-| `.github/workflows/production-e2e-test.yml` | workflow ينتظر `PRODUCTION_COMPLETE` أو `COMPLETED`، يرفض حالات الفشل، ويبقي proof المحلي مرشحًا `accepted=false` ثم يمنح القبول فقط بعد كل بوابات GitHub الحالية. |
-| `aurelia/acceptance_authority.py` | الإبقاء على عقد إثبات GitHub اللاحق دون helper runtime يربط Factory بتشغيله الحالي. |
-| `aurelia/visual_backend.py` | إضافة `shot_index` إلى logs وprovenance لإظهار هوية الطلب البصري بدقة. |
-| `aurelia/episode_engine.py` | تمرير `shot_index` الحقيقي إلى provider في كلا مساري scene-with-shots وscene-without-shots. |
-| `aurelia/visual_checkpoint.py` | التحقق من أن مسار الملف المحفوظ يطابق `expected_path` قبل اعتبار shot مكتملًا، إضافة إلى SHA والحجم. |
-| `tests/unit/test_acceptance_authority.py` | اختبارات success/failure وworkflow gate وBrowser Chat completion المستقل. |
-| `tests/unit/test_visual_checkpoint_and_dedup.py` | اختبارات uniqueness لكل shot، وإعادة استخدام cache، ورفض مسار checkpoint الخاطئ. |
+| المحرك | `aurelia/` الجذرية فقط؛ لا تنفيذ من `aurelia-engine/` |
+| API | Python canonical API؛ TypeScript compatibility proxy فقط |
+| dependencies | `requirements.txt` هو المصدر authoritative؛ `pyproject.toml` و`.replit` وGitHub متسقة مع Python 3.12 |
+| TTS | Edge TTS canonical؛ العربية `ar-SA-HamedNeural` والإنجليزية `en-US-AriaNeural` |
+| state | `QUEUED/RUNNING/FAILED/COMPLETED/STOPPED` بعقود وانتقالات حقيقية |
+| idempotency | هوية job من episode/profile/source-text SHA تحت lock ذري؛ duplicate active/completed يعاد استخدامه |
+| retry | retries محدودة، ولا retry بعد نجاح artifact |
+| checkpoint | per-job وper-scene/per-shot مع expected path وSHA والحجم وprovenance |
+| provenance | backend/voice/language/shot/text hash/output/attempts/artifact validation محفوظة |
+| acceptance | Factory يكمل مستقلًا؛ GitHub يرقّي proof إلى accepted بعد hard verification فقط |
 
-الـcommit الذي يحتوي الإصلاح الجذري هو:
+في المسار البصري، كان الالتباس السابق ناتجًا أيضًا عن logs تعرض رقم scene بينما التنفيذ كان لكل shot. أضيف `shot_index` إلى logs وprovenance. إعادة الطلب محصورة في timeout أو response ناقص، بحد أقصى ثلاث محاولات إجمالًا، بينما checkpoint يمنع إعادة توليد shot ناجح.
 
-`ebbf6ff9cf2edf4cf3eb839162fb5b8a26d503e8`
+## TTS ROOT CAUSE (Episode 0120)
 
-وسبقته إصلاحات EDIT single-pass وFFmpeg timeout-aware في `3d96ce53b5e7511903c470ca9e025c4370d52ab8`، وإصلاح مطابقة البيئة العربية في `136bf63830467289854cdce9bc19078e9d5cd5aa`.
+سبب تعارض Episode 0120 كان أن API القديم يطلق `aurelia-engine/run_job.py`، لا أن Edge TTS canonical فشل بصمت. الشجرة القديمة كانت تستخدم legacy/offline TTS (`espeak`/`pyttsx3`) وتعرض تشخيصًا عامًا عند فشل الحوار، ولذلك كان الدليل السابق على Edge TTS لا ينطبق على المسار الذي شغله ذلك الطلب.
 
-## 3. EXACT FIX
+تم حذف الشجرة التنفيذية المكررة، وتحويل `aurelia/tts.py` إلى facade رفيع يمرر إلى `EdgeTTSProvider`، ومنع fallback الإنتاجي. يسجل `aurelia/providers/audio.py` الآن provider وvoice وlanguage وsegment index وtext SHA وoutput path وartifact size وvalidation وattempt history، ولا يحول السبب الحقيقي إلى رسالة generic.
 
-أصبح lifecycle الصحيح داخل Factory هو:
+## ENVIRONMENT CONSISTENCY
 
-```text
-SCRIPT → DEVELOPMENT → STORY → WORLD → CHARACTER → SERIES_BIBLE
-→ RESEARCH → PRE_PRODUCTION → SEQUENCE → SCENE → SHOT → STORYBOARD
-→ ANIMATIC → VISUAL → ASSET → CAMERA → DEPTH → MOTION → LIGHT
-→ ATMOSPHERE → VFX → NARRATION → DIALOGUE → SOUND → MUSIC → EDIT
-→ COLOR → SUBTITLE → MASTER → QC → DELIVERY
-→ validate FINAL artifact → COMPLETED → process exit 0
-```
+`requirements.txt` هو عقد الاعتماد الإنتاجي authoritative ويتضمن `edge-tts==7.2.8`. تم توحيد Python على `>=3.12,<3.13` في `pyproject.toml` و`.replit` وGitHub Actions. workflow يثبت `requirements.txt` ويجهز FFmpeg وffprobe وespeak والخطوط؛ `requirements-ai.txt` اختياري لمسار local-AI ولا يغير مسار production canonical. كما يثبت `scripts/post-merge.sh` الاعتمادات authoritative قبل PNPM.
 
-بعد `DELIVERY` يتحقق Factory من وجود الـFINAL، وmaster validation، وvisual manifest validation، وQC المكتمل. عند نجاحها يكتب `job.status = "COMPLETED"` ويعيد النتيجة. لا توجد بعد ذلك قراءة لـ`GITHUB_ACTIONS`، ولا استدعاء لـ`gh`، ولا polling، ولا انتظار لنجاح العملية التي تشغّل Factory.
+## STATE MACHINE
 
-في المقابل، لا تزال حالات الاستثناء حقيقية: أي stage exception أو artifact مفقود أو فشل QC يمر عبر `execute()` إلى `job.status = "FAILED"` ويُعاد رفع exception، ولذلك لا يتحول failure إلى success.
+تبدأ الوظيفة `QUEUED` ثم `RUNNING`. نجاح كل عقدة لا يثبت إلا بعد output validation. فشل stage أو artifact أو QC يبقي الجذر محفوظًا ويضع الوظيفة `FAILED`، والتوقف الصريح يضعها `STOPPED`. بعد اكتمال delivery والتحقق النهائي من FINAL MP4 وQC تصبح الوظيفة `COMPLETED` وتخرج العملية بنجاح. لا توجد حالة `AWAITING_GITHUB_ACTIONS` في دورة Factory الحالية، ولا polling أو `gh` من داخل الإنتاج.
 
-داخل GitHub workflow يُنشأ proof أولي صراحة بحالة `accepted=false` و`acceptance_state=PRODUCTION_COMPLETE`. بعد ذلك تنفذ خطوات Hard artifact verification وmanifest/QC/hash checks، ثم يحدّث workflow proof إلى `accepted=true` و`acceptance_state=COMPLETED` و`github_conclusion=success`. بهذا تصبح GitHub Actions جهة التحقق الخارجية، لا dependency داخل Factory.
+في التشغيل الناجح، كان `production_manifest.json` دليل Factory المحلي على `PRODUCTION_COMPLETE`. أما `production_proof.json` فهو proof GitHub اللاحق الذي يثبت `accepted=true` و`acceptance_state=COMPLETED` بعد نجاح hard verification؛ لا ينبغي الخلط بين الحالتين.
 
-### تحليل تكرار Pollinations
+## RETRY MODEL
 
-أظهر السجل السابق رسائل متكررة من نوع `Scene N: cloud OK via pollinations`، لكن الكود كان ينفذ الحلقة على مستوى **shot**، بينما كانت الرسالة القديمة تعرض رقم scene فقط. كما أن `generate_via_api()` يستدعي Pollinations مرة واحدة لكل shot، ولا ينتقل إلى backend آخر إلا عند failure، بينما `_read_response_bytes()` يسمح بثلاث محاولات كحد أقصى عند timeout أو response ناقص؛ وهذا retry حقيقي ومحدود، وليس إعادة توليد بعد نجاح.
+يستخدم `FactoryExecutor` حدًا أقصى قدره محاولتان لإعادة المحاولة، أي ثلاث محاولات إجمالًا، مع backoff صغير bounded. يعاد job جديد فقط بعد `FAILED` أو `STOPPED`، مع `retry_of` وهوية جديدة. الطلبات المتزامنة لنفس identity لا تبدأ إنتاجًا مكلفًا ثانيًا إذا كان job في `QUEUED` أو `RUNNING`، ويعاد job المكتمل إذا ظل FINAL صالحًا.
 
-أكد التدقيق في call sites أن `EpisodeProduction.generate_visual_assets()` هو المسار البصري المستخدم من Factory، وأنه يستدعي `generate_visual()` مرة واحدة لكل `(scene_index, shot_index)`. لا يوجد استدعاء ثانٍ موازي أو تشغيل `run_all()` داخل Factory. لذلك لم يكن التكرار الناجح المؤكد في السجل إعادة توليد لنفس shot؛ كان الالتباس ناتجًا عن logging غير المميز بين shots.
+Visual Pollinations يحاول مجددًا فقط عند network timeout أو response ناقص، وEdge TTS لديه retries bounded وtimeouts صريحة. لا تعاد محاولة artifact ناجح، ولا تستخدم retries لإخفاء فشل stage أو تخفيف QC.
 
-الإصلاح العام كان إضافة `shot_index` إلى كل provider log وprovenance، مع تشديد checkpoint كي لا يعيد استخدام ملف صحيح يخص مسار shot آخر. يظل retry الفعلي محفوظًا عند failure فقط. في الإنتاج الناجح اللاحق ظهر كل استدعاء كـ`Scene N shot M`، ونتجت `19` لقطات جديدة و`0` resumed و`0` Pillow fallback.
+## CHECKPOINT/DUPLICATION MODEL
 
-### مدة الوسائط
+هوية كل shot تتضمن job root، و`scene_index:shot_index`، والمسار المتوقع، وSHA والحجم وbackend/provenance. `VisualCheckpoint.is_done` لا يعيد استخدام الملف إلا إذا تطابق expected path ووجود الملف وسلامته وSHA. يحفظ manifest مصدر الطلب وrun وasset SHA وprompt وseed وهوية shot، بينما تسجل provider logs هوية scene/shot.
 
-لم يُجرَ تغيير غير ضروري في retiming أو padding. run الناجح أنتج مدة `81.301s`، واجتاز `duration_ok` و`av_duration` و`av_sync` وfull decode وQC، ولذلك لم توجد قرينة على أن معالجة المدة سببت invalid output أو desynchronization أو QC failure.
+في التشغيل النهائي كان هناك `19` shot identity فريدًا، و`19` visual treatments و`19` depth artifacts و`16` transition عبر `19` shots، مع `0` Pillow fallback. كانت النتائج البصرية كلها `cloud-api/pollinations`. لم يظهر call path موازٍ؛ إعادة المحاولة بقيت محصورة بالفشل الحقيقي.
 
-## 4. TESTS RUN
+## GITHUB ACTIONS PARITY
 
-قبل E2E، نُفذت الاختبارات المباشرة التالية:
-
-| الاختبار | النتيجة |
-|---|---:|
-| completion/failure authority وworkflow contract وBrowser Chat contract | `27 passed` |
-| Pollinations bounded retry وresponse integrity | ناجح؛ retry محدود إلى `3` محاولات عند failure |
-| checkpoint path/SHA وvisual uniqueness/resume | ناجح؛ كل shot مرة واحدة، وإعادة التشغيل تستخدم cache |
-| Python compilation وYAML parse و`git diff --check` | ناجح |
-| suite المستودع الكاملة | `82 passed, 7 warnings` |
-
-التحذيرات السبعة warnings من dependencies/deprecations، ولم تكن فشلًا في الإنتاج أو QC. لم تُخفض عتبات QC، ولم يُسمح بـPillow fallback في production mode، ولم تتغير قاعدة `visual_variation` الصارمة `0.005`.
-
-## 5. GITHUB ACTIONS RESULT
-
-تم دفع الإصلاح إلى `main` بالـSHA:
-
-`ebbf6ff9cf2edf4cf3eb839162fb5b8a26d503e8`
-
-ثم بدأ التشغيل التلقائي الوحيد بعد الإصلاح:
+القبول النهائي الموثق صدر من GitHub Actions، لا من إنتاج محلي بديل:
 
 | الحقل | القيمة |
 |---|---|
 | Workflow | `production-e2e-test.yml` |
-| Run ID | `32981471428` |
-| Event | `push` |
-| Head SHA | `ebbf6ff9cf2edf4cf3eb839162fb5b8a26d503e8` |
+| Run ID | `32995131471` |
+| Event | `workflow_dispatch` |
+| Head SHA | `cd0243300065d03ceaeef579293ad302ae0f6bb5` |
 | Job | `production-test` |
+| Factory job | `beb99ca80744498abc6ec83e6acf705c` |
 | Status | `completed` |
 | Conclusion | `success` |
-| رابط التشغيل | [GitHub Actions run 32981471428](https://github.com/aurelia-digital-pro/Aurelia-maker-/actions/runs/32981471428) |
-
-تثبت سجلات GitHub أن checkout استخدم SHA `ebbf6ff9cf2edf4cf3eb839162fb5b8a26d503e8`، وأن Factory وصل إلى:
-
-> `[FACTORY] PRODUCTION_COMPLETE — FINAL MP4: .../episode-0003-FINAL.mp4`
-
-ثم واصلت الخطوات التنفيذية إلى Hard artifact verification وBuild final production proof وUpload proof artifacts. لم يعد workflow ينتظر Factory بعد `PRODUCTION_COMPLETE`، ولم يظهر `RuntimeError: Production failed`، ولم يظهر exit `124` أو timeout.
-
-تم رفع artifact بنجاح:
-
-| الحقل | القيمة |
-|---|---|
 | Artifact | `aurelia-production-proof` |
-| Artifact ID | `9612876264` |
-| الملفات المرفوعة | `89` |
-| الحجم | `424832550 bytes` |
-| Artifact digest | `15c5c251e96f0f74efe930fdbe974fb7ebfd2d10b8cb5e5009a4d27a882319e7` |
-| الرابط | [artifact 9612876264](https://github.com/aurelia-digital-pro/Aurelia-maker-/actions/runs/32981471428/artifacts/9612876264) |
+| Artifact ID | `9617577554` |
+| Artifact ZIP bytes | `417170338` |
+| Artifact digest | `77fe049394ae13b8253cd6e3b92cc8b7013b431983a2387daedd4c918d89ce29` |
 
-## 6. FINAL MP4 RESULT
+استخدم التشغيل طلب Chat-equivalent للـEpisode `0003` من `scripts/episode-0001-arabic-test.txt` باللغة `ar`. قبل الإنتاج شغل workflow suite الاختبارات، ثم نفذ Chat acceptance وFactory وvisual/audio/editing/QC/delivery وhard artifact verification. لم يحدث exit `124`، ولم ينتظر Factory نجاح GitHub Actions.
 
-الـFINAL الناتج من GitHub Actions، وليس فيديوًّا محليًا بديلًا، هو:
+## REMAINING RISKS
 
-`runs/e2e/episode-0003-FINAL.mp4`
+| FILE | FUNCTION | ROOT CAUSE | IMPACT |
+|---|---|---|---|
+| `aurelia/factory_runner.py` | state/manifest lifecycle | `COMPLETED` المحلي يعني Factory completion، بينما GitHub promotion لاحقة | يجب قراءة `production_proof.json` عند تقرير القبول الخارجي؛ لا يعد ذلك محركًا موازيًا |
+| `aurelia/visual_checkpoint.py` | checkpoint identity | source text/prompt hashes محفوظة في manifest/provenance لا كحقول مستقلة داخل checkpoint record نفسه | حماية resume الحالية سليمة بالـjob root/path/SHA؛ الفصل المباشر للحقول يمكن أن يكون تحسينًا لاحقًا غير حاجب |
+| `requirements-ai.txt` | optional local AI dependencies | ملف منفصل intentionally وليس جزءًا من production contract | لا يؤثر على canonical production ما دام `requirements.txt` هو المستخدم |
+| suite dependencies | pytest warnings | تحذيرات dependencies/deprecations غير حاجبة | لا تمنع production readiness ولا تغير نتيجة QC |
 
-| البوابة | النتيجة الفعلية من run |
-|---|---|
-| Episode | `0003` |
-| Factory job | `5c68fecfe8974d0bb2db3ef1449cb99d` |
-| مدة الفيديو | `81.301s` |
-| الحجم | `50521949 bytes` |
-| SHA-256 | `d78bb63951edbd1e3147fa3d4170e48617974b3bfb4c5af0be6aa493f13bcab0` |
-| video stream | موجود، `H.264`، `1920×1080`، مدة `81.301s` |
-| audio stream | موجود، واجتاز `audio_stream` و`narration_audible` |
-| frame diversity | `3` إطارات مختلفة من `3` عينات |
-| visual provider | `cloud-api/pollinations` |
-| Pillow fallback | `0` |
-| cinematic treatments | `19` |
-| depth artifacts | `19` |
-| transitions | `16` عبر `19` shots |
-| narration | Edge TTS، الصوت `ar-SA-HamedNeural`، اللغة `ar`، fallback `false`، degraded `false` |
-| narration duration | `81.288027s` |
-| audio loudness | `-16.0 LUFS` |
-| true peak | `-3.7 dBFS` |
-| clipping | `false` |
-| subtitle artifact | موجود، و`subtitle_completeness` اجتازت |
+لم تظهر في التدقيق النهائي أي مخاطرة حاجبة: لا fallback بصري، لا TTS degraded، لا duplicate shot identity، لا missing artifact، ولا قبول مبني على وجود MP4 فقط.
 
-اجتازت بوابات QC في GitHub: وجود الملف وحجمه، video/audio streams، الصيغة، المدة، FPS، full decode، freeze frames، temporal variation، visual variation بعتبة `0.005`، loudness، true peak، clipping، subtitle file، subtitle completeness، narration audibility، black frames، A/V duration وA/V sync وtarget duration. كانت `qc['delivery_blocked'] = false` وقائمة `fatals` فارغة، واجتاز `visual_qc`، ثم تطابق hash بعد Hard artifact verification مع proof النهائي.
+## FINAL PRODUCTION READINESS
 
-نتيجة proof قبل البوابة كانت عمدًا `accepted=false` و`PRODUCTION_COMPLETE`. بعد نجاح كل بوابات GitHub أصبح proof النهائي `accepted=true` و`acceptance_state=COMPLETED` و`github_conclusion=success`. هذه هي النقطة التي تثبت أن القبول ليس مبنيًا على وجود MP4 فقط.
+الـFINAL MP4 المستخرج للتدقيق من artifact GitHub هو `episode-0003-FINAL.mp4`، وليس إنتاجًا محليًا بديلًا. حجمه `49,109,522` bytes، وSHA-256 هو:
 
-## 7. REMAINING ISSUES
+```text
+52ab6b9d2c81ef148b3f39b24d66c9099f065434b30bae37c23d98812ef5a3f5
+```
 
-لا توجد مشكلة متبقية تمنع مسار الإنتاج الذي عالجه هذا التوجيه. ما زالت هناك تحذيرات dependency/deprecation غير حاجبة في suite، كما أن حزمة artifact كبيرة لأنها تتضمن الأصول واللقطات الوسيطة وأدلة الإنتاج، لكنها رُفعت بنجاح ولا تؤثر على صحة الـFINAL.
+مدته `81.301s`، والفيديو H.264 بدقة `1920×1080`، والصوت AAC. اجتاز التدقيق المستقل `ffprobe`، وFFmpeg full decode، و`freezedetect=n=-60dB:d=0.5` دون freeze duration، و`aurelia.qc_engine.run_qc(require_audio_quality=True)`، و`validate_master`، وقياس audio quality.
 
-لا يُعاد تشغيل E2E إضافي لهذا الإصلاح؛ التشغيل المعتمد الوحيد بعد الإصلاح هو `32981471428`، وهو `SUCCESS` على commit `ebbf6ff9cf2edf4cf3eb839162fb5b8a26d503e8`.
+نتائج الصوت: Edge TTS، العربية `ar-SA-HamedNeural`، `fallback=false`، `degraded=false`، `attempts=1`، وnarration duration `81.288027s`. سجّل artifact `-16.0 LUFS` و`-3.7 dBFS true peak` وclipping `false`. ملف SRT موجود واجتاز subtitle completeness. المعاينة البصرية المستقلة لثلاثة إطارات أظهرت تنوع بيئيًا ومعالجة لونية سينمائية وترجمة عربية مقروءة ضمن safe area، دون debug UI أو نص تشخيصي.
 
-## References
+تطابقت نتيجة proof مع الملف النهائي: `accepted=true`، `acceptance_state=COMPLETED`، commit `cd0243300065d03ceaeef579293ad302ae0f6bb5`، run `32995131471`، وGitHub conclusion `success`. اجتازت البوابات full decode وfreeze وtemporal/visual variation بعتبة `0.005` وaudio loudness/true peak/clipping وsubtitle/narration وA/V وformat، مع `qc.delivery_blocked=false` وقائمة `fatals` فارغة.
 
-1. [GitHub Actions run 32981471428](https://github.com/aurelia-digital-pro/Aurelia-maker-/actions/runs/32981471428)
-2. [GitHub Actions artifact 9612876264](https://github.com/aurelia-digital-pro/Aurelia-maker-/actions/runs/32981471428/artifacts/9612876264)
-3. [AURELIA Maker repository](https://github.com/aurelia-digital-pro/Aurelia-maker-)
+الاختبارات الداخلية قبل E2E: `87 passed, 7 warnings`، مع نجاح Python compile، typecheck/build لعقود API وDB، diff-check، وstatic scan. تم توثيق الإصلاح على `main` في commit `cd0243300065d03ceaeef579293ad302ae0f6bb5`، مع إبقاء هذه الوثيقة بلا تشغيل E2E جديد.
+
+PRODUCTION READY: YES

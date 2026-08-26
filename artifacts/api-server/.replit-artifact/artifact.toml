@@ -15,18 +15,23 @@ run = "pnpm --filter @workspace/api-server run dev"
 [services.production]
 
 [services.production.build]
-args = ["pnpm", "--filter", "@workspace/api-server", "run", "build"]
+args = ["bash", "scripts/build-production.sh"]
 
 [services.production.build.env]
 NODE_ENV = "production"
 
 [services.production.run]
 # we don't run through pnpm to make startup faster in production
-args = ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]
+args = ["bash", "scripts/start-api-with-canonical.sh"]
 
 [services.production.run.env]
 PORT = "8080"
 NODE_ENV = "production"
+AURELIA_PRODUCTION_MODE = "1"
+AURELIA_FORCE_FALLBACK = "0"
+AURELIA_ALLOW_DEGRADED_TTS = "0"
+AURELIA_CANONICAL_API_URL = "http://127.0.0.1:8765"
+AURELIA_CANONICAL_API_PORT = "8765"
 
 [services.production.health.startup]
 path = "/api/healthz"

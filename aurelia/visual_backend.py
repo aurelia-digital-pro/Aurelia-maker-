@@ -386,7 +386,7 @@ def backend_status() -> dict[str, Any]:
         "primary":       (
             "stable-diffusion" if probe["available"]
             else f"cloud-api/{api_st.get('forced_backend','pollinations')}"
-            if not os.environ.get("AURELIA_FORCE_FALLBACK")
+            if not _force_fallback_enabled()
             else "pillow-fallback"
         ),
         "tts_backends":  _probe_tts(),
@@ -396,6 +396,8 @@ def backend_status() -> dict[str, Any]:
 def _probe_tts() -> list[str]:
     import shutil
     available = []
+    if shutil.which("edge-tts"):
+        available.append("edge-tts")
     try:
         import kokoro  # type: ignore # noqa: F401
         available.append("kokoro")

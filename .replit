@@ -1,8 +1,11 @@
 modules = ["nodejs-24", "python-base-3.12"]
+run = ["bash", "scripts/start-canonical.sh"]
 
 [deployment]
 router = "application"
 deploymentTarget = "autoscale"
+run = ["bash", "scripts/start-canonical.sh"]
+build = ["bash", "scripts/build-production.sh"]
 
 [deployment.postBuild]
 args = ["pnpm", "store", "prune"]

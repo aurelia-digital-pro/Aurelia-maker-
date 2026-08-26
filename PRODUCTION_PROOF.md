@@ -1,134 +1,66 @@
-# AURELIA Maker — تقرير إثبات القبول الإنتاجي النهائي
+# AURELIA Maker — CTO Recovery Record
 
-## FINAL ARCHITECTURE
+## 1. Root causes confirmed
 
-تم توحيد النظام حول محرك إنتاج canonical واحد هو الشجرة الجذرية `aurelia/`. أزيلت الشجرة التنفيذية المكررة `aurelia-engine/` من Git، ونُقلت الوثائق التاريخية غير التنفيذية فقط إلى `docs/legacy/`. لم يعد في المستودع مسار إنتاج Python ثانٍ، أو Factory بديل، أو مشغّل TypeScript ينفذ الإنتاج، أو TTS legacy مخفي.
+### A. Browser Chat runtime was stale
 
-الواجهة المتعاقد عليها هي Browser Chat، ويصل الطلب إلى `aurelia.server` ثم `aurelia.chat_entry` ثم `FactoryRunner` ثم `ProductionPipeline` ثم `EpisodeProduction`. مسار `/api/productions` في TypeScript أصبح compatibility proxy عديم الحالة إلى canonical Python API، ولا ينشئ job map أو state machine أو subprocess خاصًا به.
+At investigation time, the live process on `127.0.0.1:8765` had started at `2026-08-26 15:16:28`, while the repository had since advanced to `0236d16`. Its `/api/status` returned `tts_backends=["espeak-ng","pyttsx3"]` and `primary="pillow-fallback"`. The current `HEAD` contains no `TTS: all dialogue segments failed` string. That message exists only in historical commit `c733393:aurelia/tts.py`, where dialogue-segment exceptions were swallowed and replaced by a generic error.
 
-## CANONICAL PRODUCTION PATH
+The observed Browser Chat failure therefore came from a stale runtime loaded before the canonical TTS changes, not from the current `EpisodeProduction → EdgeTTSProvider` implementation.
 
-المسار الفعلي الموحد هو:
+### B. Deployment wiring did not start the canonical backend
 
-```text
-Browser Chat
-  → aurelia.server
-  → chat_entry.handle_chat_production
-  → FactoryRunner
-  → ProductionPipeline / FactoryExecutor
-  → EpisodeProduction
-  → visual provider + shot checkpoints
-  → Edge TTS narration
-  → edit / color / subtitles / master
-  → artifact validation
-  → QC
-  → delivery
-  → Factory COMPLETED
-  → GitHub Actions hard verification
-  → accepted=true
-```
+`artifacts/api-server/.replit-artifact/artifact.toml` previously launched only the Node API process. Its proxy defaulted to `http://127.0.0.1:8765`, but the descriptor did not start Python there. Its `/api/healthz` endpoint also returned `200` without checking the canonical backend. This allowed an API service to look healthy while Browser Chat was not guaranteed to reach the canonical Python engine.
 
-عقود المراحل معرفة في `aurelia/production_contract.py`، ويجري التحقق من المدخلات قبل كل stage ومن مخرجاته قبل السماح بالانتقال. الناتج الناقص أو metadata-only لا يعد نجاحًا؛ يتحول إلى `FAILED` مع الاحتفاظ بالسبب الجذري.
+### C. Status was misleading for explicit `0`
 
-## WHAT WAS WRONG
+`aurelia.visual_backend.backend_status()` treated the non-empty string `AURELIA_FORCE_FALLBACK=0` as truthy and could report `pillow-fallback`. Its TTS probe did not report the installed `edge-tts` executable. This was a health/diagnostic defect, not permission to use a fallback in production.
 
-كشفت المواصفة الأحدث مسارين متوازيين حقيقيين. كان `artifacts/api-server/src/routes/productions.ts` يستدعي `spawn` لتشغيل `aurelia-engine/run_job.py`، وكانت تلك الشجرة تستخدم state model مختلفًا (`VALIDATED`) ومسار TTS offline مختلفًا. لذلك لم يكن نجاح Edge TTS السابق يثبت أن مسار Episode 0120 الفعلي يستخدم Edge TTS.
+## 2. Files affected
 
-كما كان التنفيذ السابق يحتوي دائرة اعتماد أخرى: Factory ينتظر نجاح GitHub Actions الذي يشغّل Factory نفسه. أزيل هذا الانتظار؛ GitHub يتحقق من Factory بعد اكتماله، ولا يعتمد Factory على حالة CI الحالية.
-
-ظهر في أول تشغيل بعد canonicalization، run `32994536009`، فشل مبكر عند عقدة SCRIPT لأن الحالة الابتدائية لم تكن تحتوي `episode_id` رغم أن العقدة تطلبه. لم يبدأ ذلك التشغيل أي إنتاج media/provider فعليًا. أضيف `episode_id` إلى initial state، واختُبر الإصلاح محليًا قبل التشغيل النهائي.
-
-## WHAT WAS CONSOLIDATED
-
-| المجال | الحالة الموحدة الحالية |
+| File | Purpose of change |
 |---|---|
-| المحرك | `aurelia/` الجذرية فقط؛ لا تنفيذ من `aurelia-engine/` |
-| API | Python canonical API؛ TypeScript compatibility proxy فقط |
-| dependencies | `requirements.txt` هو المصدر authoritative؛ `pyproject.toml` و`.replit` وGitHub متسقة مع Python 3.12 |
-| TTS | Edge TTS canonical؛ العربية `ar-SA-HamedNeural` والإنجليزية `en-US-AriaNeural` |
-| state | `QUEUED/RUNNING/FAILED/COMPLETED/STOPPED` بعقود وانتقالات حقيقية |
-| idempotency | هوية job من episode/profile/source-text SHA تحت lock ذري؛ duplicate active/completed يعاد استخدامه |
-| retry | retries محدودة، ولا retry بعد نجاح artifact |
-| checkpoint | per-job وper-scene/per-shot مع expected path وSHA والحجم وprovenance |
-| provenance | backend/voice/language/shot/text hash/output/attempts/artifact validation محفوظة |
-| acceptance | Factory يكمل مستقلًا؛ GitHub يرقّي proof إلى accepted بعد hard verification فقط |
+| `.replit` | Project and deployment run/build commands now use the canonical launch/build scripts. |
+| `scripts/start-canonical.sh` | Starts the Python canonical Browser Chat server with strict production defaults. |
+| `scripts/start-api-with-canonical.sh` | Starts one Python canonical backend and the Node compatibility proxy; no second engine. |
+| `scripts/build-production.sh` | Installs authoritative Python requirements before building the API artifact. |
+| `artifacts/api-server/.replit-artifact/artifact.toml` | Production build/run now use the canonical scripts and strict environment flags. |
+| `artifacts/api-server/src/routes/health.ts` | `/api/healthz` now returns `503` if canonical Python is unavailable/unhealthy. |
+| `aurelia/visual_backend.py` | Corrects fallback flag parsing and reports `edge-tts` in status. |
+| `tests/unit/test_runtime_wiring.py` | Regression coverage for runtime wiring and environment/status semantics. |
 
-في المسار البصري، كان الالتباس السابق ناتجًا أيضًا عن logs تعرض رقم scene بينما التنفيذ كان لكل shot. أضيف `shot_index` إلى logs وprovenance. إعادة الطلب محصورة في timeout أو response ناقص، بحد أقصى ثلاث محاولات إجمالًا، بينما checkpoint يمنع إعادة توليد shot ناجح.
+The canonical production TTS code itself was not replaced or bypassed: `EpisodeProduction.synthesize_narration()` still instantiates `EdgeTTSProvider`, uses `ar-SA-HamedNeural` for Arabic, validates the WAV artifact, and rejects degraded provenance.
 
-## TTS ROOT CAUSE (Episode 0120)
+## 3. Fixes actually applied
 
-سبب تعارض Episode 0120 كان أن API القديم يطلق `aurelia-engine/run_job.py`، لا أن Edge TTS canonical فشل بصمت. الشجرة القديمة كانت تستخدم legacy/offline TTS (`espeak`/`pyttsx3`) وتعرض تشخيصًا عامًا عند فشل الحوار، ولذلك كان الدليل السابق على Edge TTS لا ينطبق على المسار الذي شغله ذلك الطلب.
+The runtime now has one explicit startup contract. The root Project/Deployment starts `scripts/start-canonical.sh`; the separate API artifact starts `scripts/start-api-with-canonical.sh`, which launches the same Python canonical server and then the stateless Node proxy. Both paths set `AURELIA_PRODUCTION_MODE=1`, `AURELIA_FORCE_FALLBACK=0`, and `AURELIA_ALLOW_DEGRADED_TTS=0` unless explicitly overridden by deployment configuration.
 
-تم حذف الشجرة التنفيذية المكررة، وتحويل `aurelia/tts.py` إلى facade رفيع يمرر إلى `EdgeTTSProvider`، ومنع fallback الإنتاجي. يسجل `aurelia/providers/audio.py` الآن provider وvoice وlanguage وsegment index وtext SHA وoutput path وartifact size وvalidation وattempt history، ولا يحول السبب الحقيقي إلى رسالة generic.
+The Node health check now depends on `GET /api/health` from the canonical Python server and fails closed. The status endpoint now distinguishes `0` from `1` correctly and reports `edge-tts` when installed. No production fallback, QC bypass, or alternative engine was added.
 
-## ENVIRONMENT CONSISTENCY
+The stale local process was terminated and restarted from the current checkout using the canonical launcher. This was a runtime restart and health/status smoke check only; no Chat POST, provider generation, production job, or E2E was run.
 
-`requirements.txt` هو عقد الاعتماد الإنتاجي authoritative ويتضمن `edge-tts==7.2.8`. تم توحيد Python على `>=3.12,<3.13` في `pyproject.toml` و`.replit` وGitHub Actions. workflow يثبت `requirements.txt` ويجهز FFmpeg وffprobe وespeak والخطوط؛ `requirements-ai.txt` اختياري لمسار local-AI ولا يغير مسار production canonical. كما يثبت `scripts/post-merge.sh` الاعتمادات authoritative قبل PNPM.
+## 4. Validation actually performed
 
-## STATE MACHINE
+| Validation | Result |
+|---|---:|
+| Targeted runtime/TTS regression tests | `19 passed, 5 warnings` |
+| Full repository test suite | `92 passed, 7 warnings` |
+| Python compileall | PASS |
+| Bash syntax checks for all launch/build scripts | PASS |
+| TOML/YAML parsing | PASS |
+| API Zod/DB TypeScript build | PASS |
+| API-server TypeScript typecheck | PASS |
+| `git diff --check` | PASS |
+| Current Chat server `GET /api/health` | PASS |
+| Current Chat server `GET /api/status` | `edge-tts`, `cloud-api/auto`, no Pillow primary |
+| Current `HEAD` exact legacy error search | absent |
 
-تبدأ الوظيفة `QUEUED` ثم `RUNNING`. نجاح كل عقدة لا يثبت إلا بعد output validation. فشل stage أو artifact أو QC يبقي الجذر محفوظًا ويضع الوظيفة `FAILED`، والتوقف الصريح يضعها `STOPPED`. بعد اكتمال delivery والتحقق النهائي من FINAL MP4 وQC تصبح الوظيفة `COMPLETED` وتخرج العملية بنجاح. لا توجد حالة `AWAITING_GITHUB_ACTIONS` في دورة Factory الحالية، ولا polling أو `gh` من داخل الإنتاج.
+The prior GitHub run `32995131471` and its Episode 0003 artifact remain historical evidence of the canonical engine’s real production path, but are deliberately not used as evidence that the current Browser Chat runtime has completed a new production after this recovery.
 
-في التشغيل الناجح، كان `production_manifest.json` دليل Factory المحلي على `PRODUCTION_COMPLETE`. أما `production_proof.json` فهو proof GitHub اللاحق الذي يثبت `accepted=true` و`acceptance_state=COMPLETED` بعد نجاح hard verification؛ لا ينبغي الخلط بين الحالتين.
+## 5. Remaining blockers
 
-## RETRY MODEL
+**BLOCKER:** A new real production request from the current Browser Chat runtime was explicitly prohibited by `pasted_content_20.txt`, so the repaired runtime has not been granted a fresh Chat-to-FINAL-MP4 acceptance proof. The stale-runtime root cause is confirmed and the runtime wiring is corrected, but the completion gate requiring current Chat → Factory → real narration → real visuals → QC → FINAL MP4 cannot truthfully be marked complete without that separately authorized validation.
 
-يستخدم `FactoryExecutor` حدًا أقصى قدره محاولتان لإعادة المحاولة، أي ثلاث محاولات إجمالًا، مع backoff صغير bounded. يعاد job جديد فقط بعد `FAILED` أو `STOPPED`، مع `retry_of` وهوية جديدة. الطلبات المتزامنة لنفس identity لا تبدأ إنتاجًا مكلفًا ثانيًا إذا كان job في `QUEUED` أو `RUNNING`، ويعاد job المكتمل إذا ظل FINAL صالحًا.
+## 6. Final production status
 
-Visual Pollinations يحاول مجددًا فقط عند network timeout أو response ناقص، وEdge TTS لديه retries bounded وtimeouts صريحة. لا تعاد محاولة artifact ناجح، ولا تستخدم retries لإخفاء فشل stage أو تخفيف QC.
-
-## CHECKPOINT/DUPLICATION MODEL
-
-هوية كل shot تتضمن job root، و`scene_index:shot_index`، والمسار المتوقع، وSHA والحجم وbackend/provenance. `VisualCheckpoint.is_done` لا يعيد استخدام الملف إلا إذا تطابق expected path ووجود الملف وسلامته وSHA. يحفظ manifest مصدر الطلب وrun وasset SHA وprompt وseed وهوية shot، بينما تسجل provider logs هوية scene/shot.
-
-في التشغيل النهائي كان هناك `19` shot identity فريدًا، و`19` visual treatments و`19` depth artifacts و`16` transition عبر `19` shots، مع `0` Pillow fallback. كانت النتائج البصرية كلها `cloud-api/pollinations`. لم يظهر call path موازٍ؛ إعادة المحاولة بقيت محصورة بالفشل الحقيقي.
-
-## GITHUB ACTIONS PARITY
-
-القبول النهائي الموثق صدر من GitHub Actions، لا من إنتاج محلي بديل:
-
-| الحقل | القيمة |
-|---|---|
-| Workflow | `production-e2e-test.yml` |
-| Run ID | `32995131471` |
-| Event | `workflow_dispatch` |
-| Head SHA | `cd0243300065d03ceaeef579293ad302ae0f6bb5` |
-| Job | `production-test` |
-| Factory job | `beb99ca80744498abc6ec83e6acf705c` |
-| Status | `completed` |
-| Conclusion | `success` |
-| Artifact | `aurelia-production-proof` |
-| Artifact ID | `9617577554` |
-| Artifact ZIP bytes | `417170338` |
-| Artifact digest | `77fe049394ae13b8253cd6e3b92cc8b7013b431983a2387daedd4c918d89ce29` |
-
-استخدم التشغيل طلب Chat-equivalent للـEpisode `0003` من `scripts/episode-0001-arabic-test.txt` باللغة `ar`. قبل الإنتاج شغل workflow suite الاختبارات، ثم نفذ Chat acceptance وFactory وvisual/audio/editing/QC/delivery وhard artifact verification. لم يحدث exit `124`، ولم ينتظر Factory نجاح GitHub Actions.
-
-## REMAINING RISKS
-
-| FILE | FUNCTION | ROOT CAUSE | IMPACT |
-|---|---|---|---|
-| `aurelia/factory_runner.py` | state/manifest lifecycle | `COMPLETED` المحلي يعني Factory completion، بينما GitHub promotion لاحقة | يجب قراءة `production_proof.json` عند تقرير القبول الخارجي؛ لا يعد ذلك محركًا موازيًا |
-| `aurelia/visual_checkpoint.py` | checkpoint identity | source text/prompt hashes محفوظة في manifest/provenance لا كحقول مستقلة داخل checkpoint record نفسه | حماية resume الحالية سليمة بالـjob root/path/SHA؛ الفصل المباشر للحقول يمكن أن يكون تحسينًا لاحقًا غير حاجب |
-| `requirements-ai.txt` | optional local AI dependencies | ملف منفصل intentionally وليس جزءًا من production contract | لا يؤثر على canonical production ما دام `requirements.txt` هو المستخدم |
-| suite dependencies | pytest warnings | تحذيرات dependencies/deprecations غير حاجبة | لا تمنع production readiness ولا تغير نتيجة QC |
-
-لم تظهر في التدقيق النهائي أي مخاطرة حاجبة: لا fallback بصري، لا TTS degraded، لا duplicate shot identity، لا missing artifact، ولا قبول مبني على وجود MP4 فقط.
-
-## FINAL PRODUCTION READINESS
-
-الـFINAL MP4 المستخرج للتدقيق من artifact GitHub هو `episode-0003-FINAL.mp4`، وليس إنتاجًا محليًا بديلًا. حجمه `49,109,522` bytes، وSHA-256 هو:
-
-```text
-52ab6b9d2c81ef148b3f39b24d66c9099f065434b30bae37c23d98812ef5a3f5
-```
-
-مدته `81.301s`، والفيديو H.264 بدقة `1920×1080`، والصوت AAC. اجتاز التدقيق المستقل `ffprobe`، وFFmpeg full decode، و`freezedetect=n=-60dB:d=0.5` دون freeze duration، و`aurelia.qc_engine.run_qc(require_audio_quality=True)`، و`validate_master`، وقياس audio quality.
-
-نتائج الصوت: Edge TTS، العربية `ar-SA-HamedNeural`، `fallback=false`، `degraded=false`، `attempts=1`، وnarration duration `81.288027s`. سجّل artifact `-16.0 LUFS` و`-3.7 dBFS true peak` وclipping `false`. ملف SRT موجود واجتاز subtitle completeness. المعاينة البصرية المستقلة لثلاثة إطارات أظهرت تنوع بيئيًا ومعالجة لونية سينمائية وترجمة عربية مقروءة ضمن safe area، دون debug UI أو نص تشخيصي.
-
-تطابقت نتيجة proof مع الملف النهائي: `accepted=true`، `acceptance_state=COMPLETED`، commit `cd0243300065d03ceaeef579293ad302ae0f6bb5`، run `32995131471`، وGitHub conclusion `success`. اجتازت البوابات full decode وfreeze وtemporal/visual variation بعتبة `0.005` وaudio loudness/true peak/clipping وsubtitle/narration وA/V وformat، مع `qc.delivery_blocked=false` وقائمة `fatals` فارغة.
-
-الاختبارات الداخلية قبل E2E: `87 passed, 7 warnings`، مع نجاح Python compile، typecheck/build لعقود API وDB، diff-check، وstatic scan. تم توثيق الإصلاح على `main` في commit `cd0243300065d03ceaeef579293ad302ae0f6bb5`، مع إبقاء هذه الوثيقة بلا تشغيل E2E جديد.
-
-PRODUCTION READY: YES
+`NOT READY — السبب المحدد هو أن المواصفة الحالية منعت تشغيل production/E2E جديد، ولذلك لا توجد بعدُ نتيجة قبول جديدة للمسار الحالي بعد إصلاح runtime wiring. لا توجد قرينة على استمرار رسالة TTS legacy في الكود أو في الخادم الذي أُعيد تشغيله من HEAD.`

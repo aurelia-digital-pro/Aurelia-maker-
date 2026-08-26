@@ -1,45 +1,45 @@
-# [Project name]
+# AURELIA Maker
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+AURELIA Maker is a canonical Chat → Factory → cinematic production engine. Browser Chat is served by the Python canonical API and every accepted production request uses the same Factory/Pipeline implementation.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `bash scripts/start-canonical.sh` — start the canonical Python Browser Chat server; it binds `PORT` (default `8765`) and enforces production-safe defaults.
+- `bash scripts/start-api-with-canonical.sh` — start the stateless Node compatibility proxy together with one canonical Python backend.
+- `bash scripts/build-production.sh` — install authoritative `requirements.txt`, then build the API artifact.
+- `python3 -m pytest -q tests/` — run the repository regression suite.
+- `pnpm run typecheck` — run TypeScript checks where the workspace policy permits.
 
-## Stack
+`requirements.txt` is the authoritative Python runtime contract. Production narration requires `edge-tts==7.2.8`, and Arabic production narration uses `ar-SA-HamedNeural`. Production visual fallback is disabled by `AURELIA_FORCE_FALLBACK=0`; degraded TTS is disabled by `AURELIA_ALLOW_DEGRADED_TTS=0`.
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+## Canonical path
 
-## Where things live
+```text
+Browser Chat → aurelia.server → chat_entry → FactoryRunner
+→ ProductionPipeline → EpisodeProduction → Edge TTS / real visuals
+→ editing → subtitles → master → QC → delivery → FINAL MP4
+```
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+The Node API artifact is a compatibility proxy only. It does not own a process, job map, FactoryRunner, engine root, or independent production state machine. Its readiness endpoint checks the canonical Python `/api/health` endpoint.
 
-## Architecture decisions
+## Runtime and deployment notes
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+Use the same Python 3.12 contract in the local Project, API artifact, and GitHub Actions. Do not start a second engine or use `aurelia-engine/`; that executable tree was removed. A service that exposes `/api` without starting or reaching the canonical Python backend is not production-ready, even if its HTTP health endpoint is reachable.
 
-## Product
+## Repository map
 
-_Describe the high-level user-facing capabilities of this app once they exist._
-
-## User preferences
-
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- `aurelia/server.py` — canonical FastAPI server and job/video API.
+- `aurelia/chat_entry.py` — Browser Chat request binding.
+- `aurelia/factory_runner.py` — canonical job lifecycle, idempotency, retry, completion, and failure propagation.
+- `aurelia/production_pipeline.py` — ordered stage execution and contracts.
+- `aurelia/episode_engine.py` — visual, narration, editing, subtitle, and master implementation.
+- `aurelia/providers/audio.py` — strict Edge TTS provider and diagnostic provenance.
+- `aurelia/production_contract.py` — stage input/output contracts.
+- `artifacts/api-server/src/routes/productions.ts` — stateless compatibility proxy.
+- `scripts/start-canonical.sh` — canonical Browser Chat launcher.
+- `scripts/start-api-with-canonical.sh` — proxy plus canonical backend launcher.
+- `scripts/build-production.sh` — authoritative runtime install and API build.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+A Factory `COMPLETED` state is local engine completion. External acceptance is represented separately by the GitHub-promoted production proof after artifact and QC verification. Never treat an MP4’s existence, a Node `/api/healthz` response, or an old E2E artifact alone as proof that the current Browser Chat runtime has passed acceptance.

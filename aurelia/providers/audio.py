@@ -1,6 +1,7 @@
 """Provider-aware audio/TTS adapters for AURELIA Maker."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -70,16 +71,22 @@ class EdgeTTSProvider(AudioProvider):
 
     @staticmethod
     def _probe_audio(path: Path) -> dict[str, Any]:
-        result = subprocess.run(
-            [
-                "ffprobe", "-v", "error", "-select_streams", "a:0",
-                "-show_entries", "stream=codec_name,sample_rate,channels",
-                "-show_entries", "format=duration,size", "-of", "json", str(path),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "error", "-select_streams", "a:0",
+                    "-show_entries", "stream=codec_name,sample_rate,channels",
+                    "-show_entries", "format=duration,size", "-of", "json", str(path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"TTS output probe timed out after 60s: {path}"
+            ) from exc
         if result.returncode != 0:
             raise RuntimeError(f"TTS output probe failed: {result.stderr[-500:]}")
         data = json.loads(result.stdout)
@@ -126,12 +133,22 @@ class EdgeTTSProvider(AudioProvider):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         lang = self._normalise_language(language, text)
         voice = self._voice_for(lang, kwargs.get("voice"))
+        segment_index = int(kwargs.get("segment_index", 0))
+        text_fingerprint = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        diagnostic_prefix = (
+            f"provider={self.name} voice={voice} language={lang} "
+            f"segment={segment_index} text_sha256={text_fingerprint} "
+            f"output={output_path}"
+        )
         edge = shutil.which("edge-tts")
         if edge is None:
             reason = "edge-tts executable is not installed"
             if self.allow_degraded and os.environ.get("AURELIA_PRODUCTION_MODE", "0") != "1":
                 return self._degraded_espeak(text, output_path, lang, reason)
-            raise RuntimeError(f"Production TTS requires Edge Neural provider: {reason}")
+            raise RuntimeError(
+                f"Production TTS requires Edge Neural provider: {reason}; "
+                f"{diagnostic_prefix} attempt=0 validation=not-run artifact_bytes=0"
+            )
 
         last_error = ""
         attempt_errors: list[str] = []
@@ -187,6 +204,11 @@ class EdgeTTSProvider(AudioProvider):
                         "voice": voice,
                         "language": lang,
                         "model_or_voice_id": voice,
+                        "segment_index": segment_index,
+                        "text_sha256": text_fingerprint,
+                        "output_path": str(output_path),
+                        "artifact_size_bytes": output_path.stat().st_size,
+                        "artifact_validation": "passed",
                         "duration_s": metrics["duration_s"],
                         "sample_rate": metrics["sample_rate"],
                         "channels": metrics["channels"],
@@ -213,9 +235,12 @@ class EdgeTTSProvider(AudioProvider):
                         time.sleep(min(2.0 * attempt, 5.0))
 
         history = "; ".join(attempt_errors[-self.max_attempts:])
+        artifact_size = output_path.stat().st_size if output_path.is_file() else 0
         reason = (
             f"Edge TTS failed after {self.max_attempts} attempts: {last_error}"
             + (f" | attempts: {history}" if history else "")
+            + f" | {diagnostic_prefix} attempt={self.max_attempts} "
+              f"artifact_bytes={artifact_size} validation=failed"
         )
         if self.allow_degraded and os.environ.get("AURELIA_PRODUCTION_MODE", "0") != "1":
             return self._degraded_espeak(text, output_path, lang, reason)

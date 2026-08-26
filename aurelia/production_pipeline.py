@@ -1,9 +1,4 @@
-"""AURELIA Maker — canonical production pipeline integration.
-
-There is one production path: FactoryRunner supplies the processors from the
-current Chat request and this module only coordinates execution/persistence.
-No demo, acceptance, fixture, or default episode content is resolved here.
-"""
+"""Canonical production pipeline coordinator."""
 
 from __future__ import annotations
 
@@ -12,7 +7,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .orchestrator import ProductionOrchestrator
-from .production_contract import PRODUCTION_STAGES
+from .production_contract import (
+    PRODUCTION_STAGES,
+    ProductionContract,
+    build_production_contracts,
+    validate_production_contracts,
+)
 
 Processor = Callable[[dict[str, Any]], dict[str, Any]]
 Validator = Callable[[dict[str, Any]], bool]
@@ -22,13 +22,22 @@ Validator = Callable[[dict[str, Any]], bool]
 class ProductionPipeline:
     orchestrator: ProductionOrchestrator
     stages: tuple[str, ...] = PRODUCTION_STAGES
+    contracts: dict[str, ProductionContract] = field(default_factory=build_production_contracts)
     executions: list[Any] = field(default_factory=list)
 
     def validate(self) -> None:
         if tuple(self.stages) != PRODUCTION_STAGES:
             raise ValueError("Production pipeline stages do not match canonical order")
+        contract_result = validate_production_contracts(self.contracts)
+        if not contract_result["valid"]:
+            raise ValueError(
+                "Invalid production contracts: "
+                + "; ".join(contract_result["errors"])
+            )
         for stage in self.stages:
             self.orchestrator.validate_stage(stage)
+            if stage not in self.contracts:
+                raise ValueError(f"Missing production contract for stage: {stage}")
 
     def execute_stage(
         self,
@@ -44,6 +53,19 @@ class ProductionPipeline:
         artifact_paths: list[Path] | None = None,
         force: bool = False,
     ) -> Any:
+        contract = self.contracts.get(stage)
+        if contract is None:
+            raise ValueError(f"Missing production contract for stage: {stage}")
+        input_result = contract.validate_inputs(input_data)
+        if not input_result["valid"]:
+            raise ValueError("; ".join(input_result["errors"]))
+
+        def validate_with_contract(output: dict[str, Any]) -> bool:
+            output_result = contract.validate_outputs(output)
+            if not output_result["valid"]:
+                raise ValueError("; ".join(output_result["errors"]))
+            return bool(validator(output))
+
         execution = self.orchestrator.run_production_stage(
             project=project,
             stage=stage,
@@ -51,7 +73,7 @@ class ProductionPipeline:
             unit_id=unit_id,
             input_data=input_data,
             processor=processor,
-            validator=validator,
+            validator=validate_with_contract,
             run_id=run_id,
             artifact_paths=artifact_paths,
             force=force,
@@ -68,6 +90,7 @@ class ProductionPipeline:
         validators: dict[str, Validator],
         run_id: str | None = None,
     ) -> list[Any]:
+        self.validate()
         current = dict(input_data)
         results: list[Any] = []
         for stage in self.stages:

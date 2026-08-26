@@ -23,7 +23,7 @@ export const HealthCheckResponse = zod.object({
 export const ListProductionsResponseItem = zod.object({
   "jobId": zod.string(),
   "episodeId": zod.string(),
-  "status": zod.enum(['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'BLOCKED', 'VALIDATED']),
+  "status": zod.enum(['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'STOPPED', 'BLOCKED', 'VALIDATED']),
   "stage": zod.string(),
   "progress": zod.number(),
   "title": zod.string().optional(),
@@ -57,7 +57,7 @@ export const CreateProductionBody = zod.object({
 export const CreateProductionResponse = zod.object({
   "jobId": zod.string(),
   "episodeId": zod.string(),
-  "status": zod.enum(['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'BLOCKED', 'VALIDATED']),
+  "status": zod.enum(['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'STOPPED', 'BLOCKED', 'VALIDATED']),
   "stage": zod.string(),
   "progress": zod.number(),
   "title": zod.string().optional(),
@@ -84,7 +84,7 @@ export const GetProductionParams = zod.object({
 export const GetProductionResponse = zod.object({
   "jobId": zod.string(),
   "episodeId": zod.string(),
-  "status": zod.enum(['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'BLOCKED', 'VALIDATED']),
+  "status": zod.enum(['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'STOPPED', 'BLOCKED', 'VALIDATED']),
   "stage": zod.string(),
   "progress": zod.number(),
   "title": zod.string().optional(),

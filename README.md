@@ -26,7 +26,7 @@ PYTHONPATH=. python3 -m aurelia.generate serve
 # Open http://127.0.0.1:8765
 ```
 
-The minimum operating environment is Python 3.10+, FFmpeg with `ffprobe`, a working speech backend such as `espeak-ng`, Pillow, NumPy, pydub, and a font configuration that can render Arabic subtitles when Arabic input is used.
+The authoritative production environment is Python 3.12+, the dependencies in `requirements.txt`, the `edge-tts` executable, FFmpeg with `ffprobe`, Pillow, NumPy, pydub, and a font configuration that can render Arabic subtitles. In production mode, Edge Neural TTS is mandatory; local `espeak-ng` is only an explicitly degraded non-production adapter.
 
 ## 4. Chat and Script Inputs
 
@@ -60,7 +60,7 @@ Chat / CLI
   → scene and shot grammar
   → visual provider and per-shot visual manifest
   → camera, depth, motion, lighting, atmosphere, and VFX rendering
-  → offline narration, music, ambience, and sound design
+  → canonical Edge Neural narration/TTS, music, ambience, and sound design
   → edit, transitions, color, subtitles, mastering
   → QC and delivery
 ```
@@ -76,7 +76,7 @@ The factory exposes the following stage vocabulary:
 | Story | SCRIPT, DEVELOPMENT, STORY, WORLD, CHARACTER, SERIES_BIBLE, RESEARCH |
 | Planning | PRE_PRODUCTION, SEQUENCE, SCENE, SHOT, STORYBOARD, ANIMATIC |
 | Visuals | VISUAL, ASSET, CAMERA, DEPTH, MOTION, LIGHT, ATMOSPHERE, VFX |
-| Audio | NARRATION, DIALOGUE, SOUND, MUSIC, AUDIO |
+| Audio | NARRATION, DIALOGUE, SOUND, MUSIC |
 | Finishing | EDIT, COLOR, SUBTITLE, MASTER, QC, DELIVERY |
 
 Scene and shot counts are derived from narrative content. The planner balances sentence units into multiple scenes, and the shot designer assigns framing, movement, lens, depth, and shot function instead of using one hard-coded template.
@@ -95,7 +95,7 @@ After image generation, `CinematicVisualEngine` renders each shot as a real vide
 
 ## 8. Audio, Narration, Music, and Mixing
 
-Narration is synthesized locally through the available offline chain: Piper or Kokoro when installed, followed by espeak-ng and pyttsx3 fallbacks. Arabic and English are detected from the text, and dialogue-prefixed lines can be split into speaker segments.
+Narration uses the canonical provider-aware `EdgeTTSProvider`: Arabic selects `ar-SA-HamedNeural`, English selects the configured English Edge voice, and the resulting WAV is probed before the pipeline advances. In production mode, provider failure is preserved as a failure; espeak-ng is available only through an explicit degraded non-production path. Arabic and English are detected from the text, and dialogue-prefixed lines can be split into speaker segments.
 
 Music is a structured 48 kHz stereo score with intro, build, climax, and resolution layers. Ambient synthesis provides deterministic environmental beds such as forest, mountain, desert, machine, ocean, city, space, and ancient profiles. Sound-design layers and narration are mixed with FFmpeg/pydub gain control and ducking so the final MP4 contains real narration, music, ambience, and effects streams in the final mix.
 
@@ -127,7 +127,7 @@ PYTHONPATH=. python3 scripts/repair_acceptance_smoke.py
 PYTHONPATH=. python3 scripts/sound_design_smoke.py
 ```
 
-The GitHub Actions workflows install the declared requirements, install FFmpeg and espeak-ng, run the repository regression suite, execute local media smoke checks, and run the real end-to-end acceptance workflow where configured. Cloud visual generation is optional in CI; workflows that require it must provide the corresponding backend configuration.
+The GitHub Actions workflow installs `requirements.txt`, Python 3.12, FFmpeg, espeak-ng for non-production utilities, and Arabic fonts, then runs the repository suite and canonical Chat-to-Factory acceptance path. Production acceptance requires a real visual provider and canonical Edge TTS; Pillow and local degraded audio are never accepted as production results.
 
 ## 13. Output Layout and Provenance
 

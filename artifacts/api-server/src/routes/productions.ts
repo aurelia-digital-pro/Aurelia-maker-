@@ -1,190 +1,237 @@
-import { Router, type IRouter } from "express";
-import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { Readable } from "node:stream";
+import { Router, type IRouter, type Request, type Response as ExpressResponse } from "express";
 import {
   CreateProductionBody,
   GetProductionParams,
   GetProductionVideoParams,
 } from "@workspace/api-zod";
-import { logger } from "../lib/logger";
 
-type Status = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "BLOCKED" | "VALIDATED";
-type Production = {
-  jobId: string;
-  episodeId: string;
-  status: Status;
-  stage: string;
-  progress: number;
-  title?: string;
-  language?: string;
-  profile: string;
-  request: string;
-  source: "chat";
-  createdAt: string;
-  finalMp4: string | null;
-  downloadUrl: string | null;
-  error: string | null;
-  logs: string[];
-  metadata: Record<string, unknown>;
-};
+/**
+ * Compatibility surface for clients that still call /api/productions.
+ *
+ * Production state and execution belong exclusively to the canonical Python
+ * API (`aurelia.server`). This router deliberately has no process, job map,
+ * FactoryRunner, engine root, or independent status machine.
+ */
+const canonicalApiUrl = (
+  process.env.AURELIA_CANONICAL_API_URL ?? "http://127.0.0.1:8765"
+).replace(/\/+$/, "");
 
-const jobs = new Map<string, Production>();
-const processes = new Map<string, ChildProcess>();
-const engineRootCandidates = [
-  resolve(process.cwd(), "aurelia-engine"),
-  resolve(process.cwd(), "../../aurelia-engine"),
-  resolve(import.meta.dirname, "../../../aurelia-engine"),
-];
-const engineRoot = engineRootCandidates.find((candidate) => existsSync(candidate)) ?? engineRootCandidates[0];
-
-function publicJob(job: Production): Production {
-  return { ...job, metadata: { ...job.metadata } };
+function canonicalUrl(path: string): string {
+  return `${canonicalApiUrl}${path}`;
 }
 
-function parseEngineLine(job: Production, line: string): void {
-  job.logs = [...job.logs.slice(-149), line];
-  const stage = line.match(/\[FACTORY\]\s+([A-Z_]+)\s+stage/i)?.[1];
-  if (stage) {
-    job.stage = stage;
-  } else if (line.includes("FINAL MP4")) {
-    job.stage = "DELIVERY";
-    job.progress = 100;
+async function requestCanonical(
+  path: string,
+  init?: RequestInit,
+): Promise<{ response: globalThis.Response; body: unknown }> {
+  let response: globalThis.Response;
+  try {
+    response = await fetch(canonicalUrl(path), {
+      ...init,
+      headers: {
+        accept: "application/json",
+        ...(init?.body ? { "content-type": "application/json" } : {}),
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Canonical AURELIA API unavailable at ${canonicalApiUrl}: ${reason}`,
+    );
   }
-  const jsonStart = line.indexOf("{");
-  if (jsonStart >= 0) {
+
+  const text = await response.text();
+  let body: unknown = {};
+  if (text) {
     try {
-      const event = JSON.parse(line.slice(jsonStart)) as { status?: Status; job?: Record<string, unknown>; error?: string };
-      if (event.status) job.status = event.status;
-      if (event.error) job.error = event.error;
-      if (event.job) {
-        const data = event.job;
-        job.finalMp4 = typeof data.final_mp4 === "string" ? data.final_mp4 : job.finalMp4;
-        job.metadata = typeof data.metadata === "object" && data.metadata ? data.metadata as Record<string, unknown> : job.metadata;
-        const result = job.metadata.result;
-        if (result && typeof result === "object" && "final_mp4" in result) {
-          job.finalMp4 = String((result as { final_mp4: string }).final_mp4);
-        }
-      }
+      body = JSON.parse(text);
     } catch {
-      // Regular factory output is intentionally kept as a log line.
+      body = { error: text };
     }
+  }
+  return { response, body };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function compatibilityStatus(value: unknown):
+  "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "STOPPED" | "BLOCKED" | "VALIDATED" {
+  switch (value) {
+    case "QUEUED":
+    case "RUNNING":
+    case "COMPLETED":
+    case "FAILED":
+    case "STOPPED":
+    case "BLOCKED":
+    case "VALIDATED":
+      return value;
+    default:
+      return "RUNNING";
   }
 }
 
-function startProcess(job: Production): void {
-  const episodeId = job.episodeId;
-  const pythonCandidates = [
-    resolve(engineRoot, "../.pythonlibs/bin/python"),
-    resolve(process.cwd(), ".pythonlibs/bin/python"),
-    resolve(process.cwd(), "../../.pythonlibs/bin/python"),
-    resolve(import.meta.dirname, "../../../.pythonlibs/bin/python"),
-  ];
-  const python = pythonCandidates.find((candidate) => existsSync(candidate));
-  if (!python) {
-    job.status = "FAILED";
-    job.error = "Python runtime is not available for the local production engine.";
-    job.logs.push("[engine] " + job.error);
-    return;
-  }
-  const child = spawn(python, [
-    "run_job.py",
-    "--job-id", job.jobId,
-    "--episode-id", episodeId,
-    "--profile", job.profile,
-    "--request", job.request,
-  ], { cwd: engineRoot, env: { ...process.env, PYTHONPATH: engineRoot }, stdio: ["ignore", "pipe", "pipe"] });
-  processes.set(job.jobId, child);
-  job.status = "RUNNING";
-  job.stage = "UNDERSTANDING";
-  child.stdout.on("data", (chunk: Buffer) => {
-    for (const line of chunk.toString().split(/\r?\n/).filter(Boolean)) parseEngineLine(job, line);
-  });
-  child.stderr.on("data", (chunk: Buffer) => {
-    for (const line of chunk.toString().split(/\r?\n/).filter(Boolean)) parseEngineLine(job, `[engine] ${line}`);
-  });
-  child.on("error", (error) => {
-    job.status = "FAILED";
-    job.error = error.message;
-    job.logs.push(`[engine] ${error.message}`);
-  });
-  child.on("close", (code) => {
-    processes.delete(job.jobId);
-    if (code === 0) {
-      job.status = "VALIDATED";
-      job.stage = "DELIVERY";
-      job.progress = 100;
-      job.downloadUrl = `/api/productions/${job.jobId}/video`;
-    } else if (job.status !== "FAILED") {
-      job.status = "FAILED";
-      job.error ||= `Production process exited with code ${code ?? "unknown"}`;
-    }
+function toCompatibilityJob(value: unknown): Record<string, unknown> {
+  const source = asRecord(value);
+  const status = compatibilityStatus(source.status);
+  const metadata = asRecord(source.metadata);
+  const finalMp4 = status === "COMPLETED" && typeof source.final_mp4 === "string"
+    ? source.final_mp4
+    : null;
+  return {
+    jobId: String(source.job_id ?? ""),
+    episodeId: String(source.episode_id ?? ""),
+    status,
+    stage: String(source.stage ?? ""),
+    progress: Number(source.progress ?? 0),
+    title: typeof source.title === "string" ? source.title : undefined,
+    language: typeof source.language === "string" ? source.language : undefined,
+    profile: String(source.profile ?? metadata.profile ?? "both"),
+    request: String(source.request ?? metadata.original_message ?? ""),
+    source: "chat",
+    createdAt: String(source.created_at ?? ""),
+    finalMp4,
+    downloadUrl: finalMp4 ? `/api/productions/${String(source.job_id)}/video` : null,
+    error: typeof source.error === "string" ? source.error : null,
+    logs: Array.isArray(source.logs) ? source.logs : [],
+    metadata,
+  };
+}
+
+function sendJson(res: ExpressResponse, status: number, body: unknown): void {
+  res.status(status).json(body);
+}
+
+async function handleCanonicalError(res: ExpressResponse, error: unknown): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  sendJson(res, 503, {
+    error: message,
+    canonical_api: canonicalApiUrl,
   });
 }
 
 const router: IRouter = Router();
 
-router.get("/productions", (_req, res) => {
-  res.json([...jobs.values()].reverse().map(publicJob));
+router.get("/productions", async (_req: Request, res: ExpressResponse) => {
+  try {
+    const { response, body } = await requestCanonical("/api/jobs");
+    const payload = asRecord(body);
+    const jobs = Array.isArray(payload.jobs)
+      ? payload.jobs.map(toCompatibilityJob)
+      : [];
+    sendJson(res, response.status, jobs);
+  } catch (error) {
+    await handleCanonicalError(res, error);
+  }
 });
 
-router.post("/productions", (req, res) => {
+router.post("/productions", async (req: Request, res: ExpressResponse) => {
   const parsed = CreateProductionBody.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: "Request must include production text. Add Title: and Language: lines." });
+    sendJson(res, 400, {
+      error: "Request must include non-empty production text.",
+    });
     return;
   }
+
   const request = parsed.data.request.trim();
-  const episodeId = parsed.data.episodeId?.trim() || `chat-${randomUUID().slice(0, 8)}`;
   const profile = parsed.data.profile ?? "both";
-  const titleMatch = request.match(/^\s*(?:Title|#)\s*[:#]?\s*(.+)$/im);
-  const languageMatch = request.match(/^\s*Language\s*[:=]\s*(.+)$/im);
-  if (!titleMatch || !languageMatch) {
-    res.status(400).json({ error: "Include a real Title: and Language: in the current request so production has no hidden content source." });
-    return;
+  const episodeHeader = parsed.data.episodeId
+    ? `Create Episode ${parsed.data.episodeId}`
+    : "Create Episode";
+  const message = `${episodeHeader}\nProfile: ${profile}\n${request}`;
+
+  try {
+    const { response, body } = await requestCanonical("/api/chat", {
+      method: "POST",
+      body: JSON.stringify({ message, language: "auto", profile }),
+    });
+    const source = asRecord(body);
+    if (!response.ok) {
+      sendJson(res, response.status, body);
+      return;
+    }
+    sendJson(res, response.status, {
+      jobId: String(source.job_id ?? ""),
+      episodeId: String(source.episode_id ?? parsed.data.episodeId ?? ""),
+      status: "QUEUED",
+      stage: "QUEUED",
+      progress: 0,
+      profile,
+      request,
+      source: "chat",
+      finalMp4: null,
+      downloadUrl: null,
+      error: null,
+      metadata: {
+        source: "chat",
+        canonical_api: canonicalApiUrl,
+        chat_reply: source.reply ?? "",
+      },
+    });
+  } catch (error) {
+    await handleCanonicalError(res, error);
   }
-  const job: Production = {
-    jobId: randomUUID().replaceAll("-", ""),
-    episodeId,
-    status: "QUEUED",
-    stage: "QUEUED",
-    progress: 0,
-    title: titleMatch[1].trim(),
-    language: languageMatch[1].trim(),
-    profile,
-    request,
-    source: "chat",
-    createdAt: new Date().toISOString(),
-    finalMp4: null,
-    downloadUrl: null,
-    error: null,
-    logs: ["[AURELIA] Request accepted from current Chat input.", "[AURELIA] Isolated production workspace reserved."],
-    metadata: { source: "chat", inputBound: true },
-  };
-  jobs.set(job.jobId, job);
-  startProcess(job);
-  res.status(202).json(publicJob(job));
 });
 
-router.get("/productions/:jobId", (req, res) => {
+router.get("/productions/:jobId", async (req: Request, res: ExpressResponse) => {
   const parsed = GetProductionParams.safeParse(req.params);
-  const job = parsed.success ? jobs.get(parsed.data.jobId) : undefined;
-  if (!job) {
-    res.status(404).json({ error: "Production not found in this server session." });
+  if (!parsed.success) {
+    sendJson(res, 400, { error: "Invalid production job id." });
     return;
   }
-  res.json(publicJob(job));
+  try {
+    const { response, body } = await requestCanonical(
+      `/api/jobs/${encodeURIComponent(parsed.data.jobId)}`,
+    );
+    if (!response.ok) {
+      sendJson(res, response.status, body);
+      return;
+    }
+    sendJson(res, response.status, toCompatibilityJob(body));
+  } catch (error) {
+    await handleCanonicalError(res, error);
+  }
 });
 
-router.get("/productions/:jobId/video", (req, res) => {
+router.get("/productions/:jobId/video", async (req: Request, res: ExpressResponse) => {
   const parsed = GetProductionVideoParams.safeParse(req.params);
-  const job = parsed.success ? jobs.get(parsed.data.jobId) : undefined;
-  if (!job || job.status !== "VALIDATED" || !job.finalMp4 || !existsSync(job.finalMp4)) {
-    res.status(404).json({ error: "A validated final MP4 is not available yet." });
+  if (!parsed.success) {
+    sendJson(res, 400, { error: "Invalid production job id." });
     return;
   }
-  res.download(job.finalMp4, `aurelia-${job.episodeId}-FINAL.mp4`);
+
+  let upstream: globalThis.Response;
+  try {
+    upstream = await fetch(canonicalUrl(
+      `/api/jobs/${encodeURIComponent(parsed.data.jobId)}/video`,
+    ));
+  } catch (error) {
+    await handleCanonicalError(res, error);
+    return;
+  }
+
+  if (!upstream.ok || !upstream.body) {
+    const text = await upstream.text();
+    sendJson(res, upstream.status || 503, {
+      error: text || "A validated final MP4 is not available yet.",
+    });
+    return;
+  }
+
+  res.status(upstream.status);
+  const contentType = upstream.headers.get("content-type");
+  const contentLength = upstream.headers.get("content-length");
+  const contentDisposition = upstream.headers.get("content-disposition");
+  if (contentType) res.setHeader("content-type", contentType);
+  if (contentLength) res.setHeader("content-length", contentLength);
+  if (contentDisposition) res.setHeader("content-disposition", contentDisposition);
+  Readable.fromWeb(upstream.body as any).pipe(res);
 });
 
 export default router;

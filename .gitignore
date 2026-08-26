@@ -47,7 +47,6 @@ Thumbs.db
 # Replit
 .cache/
 .local/
-aurelia-engine/output/
 output/
 
 __pycache__/

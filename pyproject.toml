@@ -1,11 +1,8 @@
 [project]
-name = "repl-nix-workspace"
-version = "0.1.0"
-description = "Add your description here"
-requires-python = ">=3.13"
-dependencies = [
-    "numpy>=2.5.2",
-    "pillow>=12.3.0",
-    "pydub>=0.25.1",
-    "pyttsx3>=2.99",
-]
+name = "aurelia-maker"
+version = "3.0.0"
+description = "AURELIA Maker — Chat → Canonical Factory → FINAL MP4"
+requires-python = ">=3.12,<3.13"
+
+# Runtime dependencies are intentionally authoritative in requirements.txt.
+# CI, Replit, and local execution install that same file.

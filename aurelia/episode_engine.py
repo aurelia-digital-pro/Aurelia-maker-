@@ -227,14 +227,16 @@ class EpisodeProduction:
     def generate_visual_assets(self) -> dict[str, list[Path]]:
         """Generate one image per SHOT.
 
-        Chain: SD (local) → Cloud API (Pollinations FLUX free) → Pillow.
+        Production chain: real local SD or Cloud API (Pollinations FLUX free).
+        Pillow remains available only for explicitly non-production development
+        paths and is rejected by the production provider contract.
         Checkpoint/resume: already-generated shots are loaded from disk,
         not regenerated. Safe to restart interrupted long-episode productions.
         """
         provider = assert_production_visual_provider(logger=self._emit)
         if provider != "development":
             self._emit(f"[PRODUCTION] Real visual provider preflight passed: {provider}")
-        self._emit("Generating visual assets — SD → Cloud API → Pillow per shot...")
+        self._emit("Generating visual assets — real SD/Cloud API per shot...")
         scene_assets: dict[str, list[Path]] = {}
         manifest_scenes: list[dict[str, Any]] = []
         total_fallbacks = 0
@@ -439,7 +441,12 @@ class EpisodeProduction:
         self._emit(f"Synthesizing narration (TTS, language={self.language})...")
         narration_path = self.dirs["audio"] / "narration.wav"
         provider = EdgeTTSProvider()
-        provider.generate(script_text, narration_path, language=self.language)
+        provider.generate(
+            script_text,
+            narration_path,
+            language=self.language,
+            segment_index=0,
+        )
         if not narration_path.exists() or narration_path.stat().st_size < 100:
             raise RuntimeError("Narration synthesis failed — TTS produced no output")
         duration = probe_duration(narration_path)

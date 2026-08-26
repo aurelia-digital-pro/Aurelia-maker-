@@ -188,9 +188,9 @@ class FactoryRunner:
                 return match.group(1).zfill(4)
         return None
 
-    def create_job(
-        self, episode_id: str, profile: str = "both",
-        script_path: Path | None = None
+    def _create_job_unlocked(
+        self, episode_id: str, profile: str, script_path: Path | None,
+        source_text_sha256: str, retry_of: str = "",
     ) -> ProductionJob:
         if not episode_id or not episode_id.strip():
             raise ValueError("Production requires an episode identifier")
@@ -201,13 +201,66 @@ class FactoryRunner:
             metadata={
                 "profile": profile,
                 "commit_sha": current_commit_sha(Path.cwd()),
+                "source_text_sha256": source_text_sha256,
+                "idempotency_key": ":".join((normalized, profile, source_text_sha256)),
+                "retry_of": retry_of,
+                "attempt": 1 if not retry_of else 2,
             },
         )
         if script_path is not None:
             job.metadata["script"] = str(script_path.resolve())
-        with self._lock:
-            self.jobs[job.job_id] = job
+        self.jobs[job.job_id] = job
         return job
+
+    def create_job(
+        self, episode_id: str, profile: str = "both",
+        script_path: Path | None = None,
+        source_text_sha256: str = "",
+        retry_of: str = "",
+    ) -> ProductionJob:
+        with self._lock:
+            return self._create_job_unlocked(
+                episode_id, profile, script_path, source_text_sha256, retry_of
+            )
+
+    def _get_or_create_job(
+        self, episode_id: str, profile: str, script_path: Path
+    ) -> tuple[ProductionJob, bool]:
+        """Atomically reuse an active/valid job or create one retry job.
+
+        Failed and stopped jobs are intentionally not reused: a new explicit
+        execution is distinguishable through ``retry_of`` and a new job id.
+        """
+        normalized = episode_id.zfill(4) if episode_id.isdigit() else episode_id.strip()
+        source_text_sha256 = self._source_text_sha256(script_path)
+        with self._lock:
+            candidates = [
+                job for job in self.jobs.values()
+                if job.episode_id == normalized
+                and str(job.metadata.get("profile", "both")) == profile
+                and str(job.metadata.get("source_text_sha256", "")) == source_text_sha256
+                and job.status in {"QUEUED", "RUNNING", "COMPLETED"}
+            ]
+            for job in reversed(candidates):
+                if job.status != "COMPLETED" or (
+                    job.final_mp4 and Path(job.final_mp4).is_file()
+                ):
+                    return job, True
+            failed = [
+                item for item in self.jobs.values()
+                if item.episode_id == normalized
+                and str(item.metadata.get("profile", "both")) == profile
+                and str(item.metadata.get("source_text_sha256", "")) == source_text_sha256
+                and item.status in {"FAILED", "STOPPED"}
+            ]
+            retry_of = failed[-1].job_id if failed else ""
+            return self._create_job_unlocked(
+                episode_id, profile, script_path, source_text_sha256, retry_of
+            ), False
+
+    @staticmethod
+    def _source_text_sha256(script_path: Path) -> str:
+        return hashlib.sha256(script_path.read_bytes()).hexdigest()
 
     @staticmethod
     def _extract_metadata(script_text: str) -> tuple[str, str]:
@@ -842,7 +895,10 @@ class FactoryRunner:
     ) -> ProductionJob:
         if script_path is None:
             raise ValueError("Production requires a current Chat input")
-        job = self.create_job(episode_id, profile, script_path)
+        script_path = Path(script_path).resolve()
+        job, reused = self._get_or_create_job(episode_id, profile, script_path)
+        if reused:
+            return job
         job.status = "RUNNING"
         try:
             job.metadata["result"] = self.run_episode_production(job, script_path, profile)
@@ -860,7 +916,10 @@ class FactoryRunner:
     ) -> ProductionJob:
         if script_path is None:
             raise ValueError("Production requires a current Chat input")
-        job = self.create_job(episode_id, profile, script_path)
+        script_path = Path(script_path).resolve()
+        job, reused = self._get_or_create_job(episode_id, profile, script_path)
+        if reused:
+            return job
 
         def worker() -> None:
             job.status = "RUNNING"

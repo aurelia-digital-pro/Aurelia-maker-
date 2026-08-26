@@ -250,12 +250,22 @@ def generate_visual(
     img_cfg  = cfg.get("image", cfg.get("visual", {}))
     steps    = int(img_cfg.get("steps", 20))
     guidance = float(img_cfg.get("guidance_scale", 7.5))
-    neg_p    = img_cfg.get("negative_prompt", "")
 
     # Build cinematic prompt. Put the shot-specific note inside the structured
     # direction before token limiting; appending it afterward made the most
     # important per-shot subject/camera detail easy to truncate or ignore.
     prompt_direction = dict(direction or {})
+    neg_p    = str(img_cfg.get("negative_prompt", ""))
+    if str(prompt_direction.get("environment", "abstract")) != "human":
+        neg_p = ", ".join(filter(None, [
+            neg_p,
+            "human figure",
+            "face",
+            "portrait",
+            "woman",
+            "man",
+            "people",
+        ]))
     if visual_note:
         prompt_direction["shot_visual_note"] = visual_note
     try:

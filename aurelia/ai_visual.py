@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import math
 import random
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -23,29 +24,48 @@ from typing import Any
 
 CLIP_MAX_TOKENS = 77
 _ENVIRONMENT_SUBJECTS: dict[str, str] = {
-    "space": "star field, planets, orbital structures; no people",
-    "desert": "sunlit dunes, wind-shaped sand, distant horizon; no people",
-    "ocean": "open ocean, waves, horizon light, reflective water; no people",
-    "forest": "layered trees, moss, filtered sunlight, forest path; no people",
-    "mountain": "mountain ridges, rock faces, sky, atmospheric distance; no people",
-    "city": "dawn city street, architecture, windows, traffic light, skyline; no portrait subject",
-    "home": "planning room, table, papers, timeline light, instruments; no people",
-    "laboratory": "production laboratory, glass panels, monitors, instruments, controlled light; no people",
-    "battle": "wide battlefield, smoke, terrain, distant structures; no portrait subject",
-    "machine": "blue signal nodes, glass panels, circuits, instruments; no people",
+    "space": "uninhabited star field, planets, orbital structures, luminous orbital grid, layered cosmic depth",
+    "desert": "sunlit dunes, wind-shaped sand, distant horizon, layered desert atmosphere",
+    "ocean": "open ocean, waves, horizon light, reflective water, near and distant atmospheric layers",
+    "forest": "layered trees, moss, filtered sunlight, forest path, layered woodland depth",
+    "mountain": "mountain ridges, rock faces, sky, atmospheric distance, layered terrain",
+    "city": "dawn city street, architecture, windows, traffic lights, skyline, wet pavement reflections",
+    "home": "empty warm planning room, long table, papers, timeline cards, glass board, morning window light",
+    "laboratory": "empty production laboratory, glass panels, monitors, instruments, blue controlled light, data layers",
+    "battle": "wide battlefield, smoke, terrain, distant structures, dramatic atmospheric depth",
+    "machine": "blue signal nodes, glass panels, circuits, instruments, layered technical depth",
     "creature": "a clearly described non-human creature in its habitat, full body and environmental context",
     "human": "the explicitly described person, with identity and surrounding environment grounded in the script",
-    "ancient": "ancient architecture, stone, artifacts, and a historically grounded landscape with no people",
-    "fantasy": "an enchanted landscape with luminous structures, atmospheric depth, and no people",
-    "fire": "flames, volcanic rock, smoke layers, and glowing heat with no portrait subject",
-    "dream": "surreal architecture, floating light, and layered atmosphere with no portrait subject",
-    "industry": "steel machinery, factory floor, gantries, and industrial light with no people",
-    "abstract": "a luminous abstract network of mapped signals, transparent layers, and geometric forms with no people",
+    "ancient": "ancient architecture, stone, artifacts, historically grounded landscape, layered ruins",
+    "fantasy": "an enchanted landscape with luminous structures and layered atmospheric depth",
+    "fire": "flames, volcanic rock, smoke layers, glowing heat, dramatic foreground depth",
+    "dream": "surreal architecture, floating light, floating geometry, layered atmosphere",
+    "industry": "steel machinery, factory floor, gantries, industrial light, layered factory depth",
+    "abstract": "a luminous abstract network of mapped signals, transparent layers, geometric forms, spatial depth",
 }
 
 _VISUAL_NEGATIVE_PROMPT = (
     "text, subtitles, watermark, logo, UI, blurry, distorted, duplicate subjects"
 )
+
+_HUMAN_NEGATED_CLAUSE = re.compile(
+    r"(?:لا\s+(?:يظهر|تظهر|يوجد|توجد)|لا\s+أحد|بدون|من\s+دون|دون\s+وجود|دون\s+أشخاص|"
+    r"no\s+(?:one|person|people|face|faces|human|humans)|without\s+(?:a\s+)?(?:person|people|face|faces|human|humans))"
+    r"[^.;!?؟،؛]*[.;!?؟،؛]?",
+    re.IGNORECASE,
+)
+
+
+def _nonhuman_focus(value: str, limit: int = 12) -> str:
+    """Keep script detail while removing negated human clauses from prompts.
+
+    Image generators commonly treat nouns inside natural-language negation as
+    positive visual concepts. Non-human scenes therefore receive the remaining
+    content detail plus an explicit environmental composition, without feeding
+    portrait/face/people tokens back into the provider prompt.
+    """
+    cleaned = _HUMAN_NEGATED_CLAUSE.sub(" ", str(value))
+    return _compact_words(" ".join(cleaned.split()), limit)
 
 
 # ---------------------------------------------------------------------------
@@ -308,45 +328,88 @@ def build_scene_prompt(
             )
             continuity_parts.append("same character anchors: " + anchor_text)
     continuity_hint = "; ".join(continuity_parts)
-    palette = direction.get("visual_palette") or []
+    palette = list(direction.get("visual_palette") or [])
+    if not palette and isinstance(continuity, dict):
+        palette = list(continuity.get("palette") or [])
     palette_hint = ", ".join(str(value) for value in palette[:4])
     shot_visual_note = str(direction.get("shot_visual_note", "")).strip()
     environment_subject = _ENVIRONMENT_SUBJECTS.get(environment, _ENVIRONMENT_SUBJECTS["abstract"])
     human_required = environment == "human"
     subject_guard = (
-        ""
+        "explicitly described person as the subject, identity grounded in the script; "
         if human_required
-        else "no generic portrait, no unrelated people, no arbitrary female subject; "
+        else "environment and objects only, unpopulated setting, empty scene; "
     )
     composition = {
         "establishing": "environmental establishing composition, architecture and location dominant, subject small in frame",
         "action": "dynamic action composition, visible spatial context and gesture",
-        "reaction": "emotional reaction composition, expressive face with surrounding context",
+        "reaction": (
+            "emotional environmental response composition, expressive movement with surrounding context"
+            if not human_required
+            else "emotional reaction composition, expressive face with surrounding context"
+        ),
         "climax": "dramatic focal composition, strong foreground-background separation",
         "transition": "atmospheric transitional composition, environment and light dominant",
         "resolution": "calm resolving composition, open space and hopeful environmental detail",
         "coverage": "story-driven composition with visible setting",
     }.get(shot_function, "story-driven composition with visible setting")
 
-    concise_title = _compact_words(title, 5)
-    concise_description = _compact_words(description, 10)
-    prompt = (
-        f"photorealistic cinematic film still, {environment} setting; "
-        + subject_guard
-        + (f"{continuity_hint}; " if continuity_hint else "")
-        + f"visible subject: {environment_subject}; "
-        + f"story content: {concise_title}, {concise_description}; "
-        + (f"shot detail: {shot_visual_note}; " if shot_visual_note else "")
-        + f"{composition}; {framing} shot, {lens}mm lens, {movement} camera, depth of field {dof:.1f}; "
-        f"treatment {cinematic_treatment}, depth mode {depth_mode}, "
-        f"focus behavior {focus_behavior}, atmosphere {atmosphere_mode}; "
-        f"lighting {key_color}, haze {haze:.1f}; "
-        + (f"color palette: {palette_hint}; " if palette_hint else "")
-        + "no text, no subtitles, no watermark, high quality"
-    )
-    words = prompt.split()
-    if len(words) > CLIP_MAX_TOKENS - 5:
-        prompt = " ".join(words[: CLIP_MAX_TOKENS - 5])
+    concise_title = _nonhuman_focus(title, 4) if not human_required else _compact_words(title, 4)
+    concise_description = _nonhuman_focus(description, 6) if not human_required else _compact_words(description, 6)
+    if not concise_title:
+        concise_title = environment
+    if not concise_description:
+        concise_description = environment_subject
+    # The provider-facing prompt is a compact ranked grammar. Environment,
+    # positive subject, shot detail, palette, treatment, and depth are essential
+    # production signals and must survive the CLIP budget. Long continuity and
+    # generic finishing clauses are optional and are appended only if they fit.
+    prompt_parts = [
+        "photorealistic cinematic environmental documentary frame",
+        f"{environment} setting",
+        f"environment subject: {environment_subject}",
+        subject_guard.rstrip("; "),
+        f"story focus: {concise_title}, {concise_description}",
+    ]
+    if shot_visual_note:
+        shot_detail = (
+            _nonhuman_focus(shot_visual_note, 8)
+            if not human_required
+            else _compact_words(shot_visual_note, 8)
+        )
+        if shot_detail:
+            prompt_parts.append(f"shot detail: {shot_detail}")
+    if palette_hint:
+        prompt_parts.append(f"palette: {palette_hint}")
+    prompt_parts.extend([
+        f"camera: {framing} {lens}mm {movement}",
+        f"treatment: {cinematic_treatment}, depth: {depth_mode}",
+        f"lighting: {key_color}",
+    ])
+    # Keep an environmental composition hint, continuity, and clean-frame
+    # clauses only when they fit. The fields already collected are the
+    # mandatory production grammar and are never removed by the token budget.
+    mandatory_parts = list(prompt_parts)
+    optional_parts = [composition]
+    if continuity_hint:
+        continuity_focus = (
+            _nonhuman_focus(continuity_hint, 8)
+            if not human_required
+            else _compact_words(continuity_hint, 8)
+        )
+        if continuity_focus:
+            optional_parts.append(continuity_focus)
+    optional_parts.append("clean frame, no text, no subtitles, no watermark")
+    budget = CLIP_MAX_TOKENS - 5
+    for optional in optional_parts:
+        candidate = "; ".join(prompt_parts + [optional])
+        if len(candidate.split()) <= budget:
+            prompt_parts.append(optional)
+    prompt = "; ".join(prompt_parts)
+    # This guard is only for unusually long provider-specific environment
+    # labels. It trims the lowest-priority optional tail, never the core.
+    if len(prompt.split()) > budget:
+        prompt = "; ".join(mandatory_parts)
     return prompt
 
 

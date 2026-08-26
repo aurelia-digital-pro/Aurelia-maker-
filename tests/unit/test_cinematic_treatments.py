@@ -153,7 +153,8 @@ def test_scene_prompt_keeps_shot_detail_and_blocks_generic_people():
         },
     )
     assert "red bridge" in prompt
-    assert "no generic portrait" in prompt
+    assert "environment and objects only" in prompt
+    assert "portrait" not in prompt.lower()
     assert "layered_reveal" in prompt
 
 
@@ -176,6 +177,54 @@ def test_subtitles_wrap_to_restrained_lines_without_losing_words(tmp_path, monke
     flattened = " ".join(text_lines).replace("  ", " ")
     assert "المعنى" in flattened
     assert "التفاصيل" in flattened
+
+
+def test_nonhuman_scene_prompt_frontloads_positive_environment_and_removes_negated_people():
+    from aurelia.ai_visual import build_scene_prompt
+
+    prompt = build_scene_prompt(
+        "لا تظهر وجوه أو شخصيات؛ المكان نفسه هو الموضوع",
+        "في غرفة تخطيط دافئة، تستقر الأوراق والبطاقات الزمنية فوق طاولة طويلة. لا تظهر وجوه أو شخصيات.",
+        {
+            "environment": "home",
+            "visual_palette": ["warm ivory", "wood brown", "window gold"],
+            "shot_visual_note": "long table and glass board, wide establishing reveal",
+            "cinematic_treatment": "layered_reveal",
+            "depth_mode": "parallax",
+        },
+    )
+    assert prompt.startswith("photorealistic cinematic environmental documentary frame; home setting")
+    assert "empty warm planning room" in prompt
+    assert "long table and glass board" in prompt
+    assert "warm ivory" in prompt
+    assert "portrait" not in prompt.lower()
+    assert "female" not in prompt.lower()
+    assert "face" not in prompt.lower()
+    assert "no people" not in prompt.lower()
+    assert "layered_reveal" in prompt
+    assert "parallax" in prompt
+
+
+def test_nonhuman_prompt_budget_keeps_environment_and_shot_grammar():
+    from aurelia.ai_visual import build_scene_prompt
+
+    prompt = build_scene_prompt(
+        "Technical laboratory",
+        "مختبر تقني، دوائر شفافة، أجهزة قياس، شاشات بعيدة، وإضاءة زرقاء.",
+        {
+            "environment": "laboratory",
+            "visual_palette": ["cool white", "glass blue", "technical teal"],
+            "shot_visual_note": "glass panels and blue signal nodes, lateral tracking shot",
+            "cinematic_treatment": "subject_follow",
+            "depth_mode": "focus_plane",
+        },
+    )
+    assert len(prompt.split()) <= 72
+    assert prompt.index("environment subject:") < prompt.index("story focus:")
+    assert "empty production laboratory" in prompt
+    assert "blue signal nodes" in prompt
+    assert "subject_follow" in prompt
+    assert "focus_plane" in prompt
 
 
 def test_scene_prompt_preserves_content_and_treatment_without_continuity():

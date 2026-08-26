@@ -265,13 +265,15 @@ class CinematicVisualEngine:
             f"scale={self.width}:{self.height}:force_original_aspect_ratio=increase,"
             f"crop={self.width}:{self.height},"
             f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':"
-            f"d=1:s={self.width}x{self.height}:fps={self.fps}"
+            f"d=1:s={self.width}x{self.height}:fps={self.fps},"
+            "format=yuv444p"
         )
         foreground = (
             f"scale={self.width}:{self.height}:force_original_aspect_ratio=increase,"
             f"crop={self.width}:{self.height},"
             f"zoompan=z='{fg_zoom}':x='{fg_x}':y='{fg_y}':"
-            f"d=1:s={self.width}x{self.height}:fps={self.fps}"
+            f"d=1:s={self.width}x{self.height}:fps={self.fps},"
+            "format=yuv444p"
         )
         mask = (
             f"scale={self.width}:{self.height}:force_original_aspect_ratio=increase,"

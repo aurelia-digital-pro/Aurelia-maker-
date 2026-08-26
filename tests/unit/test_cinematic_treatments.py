@@ -1,7 +1,7 @@
 from pathlib import Path
 import subprocess
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageStat
 
 from aurelia.depth import DEPTH_METHOD, build_depth_map
 from aurelia.directing_engine import DirectingEngine
@@ -81,6 +81,15 @@ def test_parallax_treatment_renders_depth_artifact_without_freeze(tmp_path: Path
     )
     assert result.returncode == 0
     assert "freeze_duration" not in result.stderr
+    frame = tmp_path / "parallax-frame.png"
+    decoded = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", "1.0", "-i", str(video),
+         "-frames:v", "1", str(frame)],
+        capture_output=True, text=True, check=False,
+    )
+    assert decoded.returncode == 0
+    means = ImageStat.Stat(Image.open(frame).convert("RGB")).mean
+    assert max(means) - min(means) >= 5.0
 
 
 def test_directing_uses_content_specific_environment_and_palette():

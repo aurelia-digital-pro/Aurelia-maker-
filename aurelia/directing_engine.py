@@ -218,8 +218,8 @@ ENVIRONMENTS: dict[str, dict[str, Any]] = {
     },
     "industry": {
         "keywords": [
-            "مصنع", "صناعة", "معدن", "حديد", "آلة", "محرك", "ميناء",
-            "factory", "industry", "metal", "steel", "engine", "industrial",
+            "مصنع", "صناعة", "معدن", "حديد", "آلة", "ميناء",
+            "factory", "industry", "metal", "steel", "industrial",
             "warehouse", "port", "machinery",
         ],
         "lens": 28.0, "framing": "wide",
@@ -351,7 +351,17 @@ class DirectingEngine:
             folded = keyword.casefold()
             if folded.isascii():
                 return bool(re.search(rf"(?<![a-z0-9]){re.escape(folded)}(?![a-z0-9])", source))
-            return folded in source
+            # Arabic substring matches are unsafe: ``نار`` occurs inside
+            # ``السيناريو`` and can incorrectly select the fire environment.
+            # Match a whole Arabic token while allowing the common definite
+            # article prefix ``ال`` before a keyword.
+            arabic_letters = r"\u0600-\u06ff"
+            return bool(
+                re.search(
+                    rf"(?<![{arabic_letters}])(?:ال)?{re.escape(folded)}(?![{arabic_letters}])",
+                    source,
+                )
+            )
 
         def score_environment(source: str) -> dict[str, int]:
             return {

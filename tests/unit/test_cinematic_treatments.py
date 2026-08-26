@@ -124,6 +124,17 @@ def test_negated_human_cues_do_not_force_portrait_environment():
     assert arabic_result["environment"] != "human"
 
 
+def test_arabic_environment_matching_uses_word_boundaries():
+    director = DirectingEngine()
+    generic = director.classify(
+        "يفهم المحرك السيناريو",
+        "يختار البيئة واللقطة واللون والعمق والحركة حتى يخرج FINAL MP4.",
+    )
+    assert generic == "abstract"
+    assert director.classify("مشهد ناري", "لهب وبركان ودخان كثيف.") == "fire"
+    assert director.classify("مصنع صناعي", "محرك ومعدن وآلات داخل مصنع.") == "industry"
+
+
 def test_scene_title_beats_cross_scene_substring_matches():
     director = DirectingEngine()
     result = director.direct(

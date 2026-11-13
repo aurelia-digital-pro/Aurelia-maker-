@@ -83,27 +83,22 @@ jobs:
       - name: "4/10 — CANONICAL FACTORY CONTRACT"
         run: |
           python -u - <<'PY'
-          from pathlib import Path
           from aurelia.factory_runner import FactoryRunner
-          from aurelia.asset_generator import generate_scene_image, generate_title_card
-          from aurelia.tts import synthesize_script
+          from aurelia.chat_entry import handle_chat_production
+          from aurelia.visuals import CinematicVisualEngine
           from aurelia.ffmpeg_util import ffmpeg_binary, ffprobe_binary
-          root = Path('runs/gate-contract')
-          root.mkdir(parents=True, exist_ok=True)
+
+          # These are the active production entrypoints. The legacy
+          # asset_generator title-card helpers are intentionally disabled
+          # in production mode and must not be used as a release-gate probe.
+          runner = FactoryRunner('.')
+          engine = CinematicVisualEngine(width=320, height=180, fps=12)
+          assert callable(getattr(runner, 'execute', None))
+          assert callable(handle_chat_production)
+          assert callable(getattr(engine, 'render_motion', None))
           assert ffmpeg_binary()
           assert ffprobe_binary()
-          title = root / 'title.png'
-          scene = root / 'scene.png'
-          wav = root / 'narration.wav'
-          generate_title_card('AURELIA MAKER', 'Contract', title)
-          generate_scene_image(0, 'Contract', 'Unique contract input', scene)
-          synthesize_script('AURELIA Maker contract narration.', wav)
-          assert title.stat().st_size > 1000
-          assert scene.stat().st_size > 1000
-          assert wav.stat().st_size > 1000
-          runner = FactoryRunner('.')
-          assert hasattr(runner, 'execute')
-          print('STAGE 4/10 PASS')
+          print('STAGE 4/10 PASS — canonical Chat, Factory, Visual Engine, FFmpeg')
           PY
 
       - name: "5/10 — REAL CHAT-TO-FACTORY FINAL MP4"

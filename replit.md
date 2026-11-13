@@ -10,7 +10,7 @@ AURELIA Maker is a canonical Chat → Factory → cinematic production engine. B
 - `python3 -m pytest -q tests/` — run the repository regression suite.
 - `pnpm run typecheck` — run TypeScript checks where the workspace policy permits.
 
-`requirements.txt` is the authoritative Python runtime contract. Production narration requires `edge-tts>=7.3.1,<8` because Microsoft requires the Sec-MS-GEC v2 token for synthesis; Arabic production narration uses `ar-SA-HamedNeural`. Production visual fallback is disabled by `AURELIA_FORCE_FALLBACK=0`; degraded TTS is disabled by `AURELIA_ALLOW_DEGRADED_TTS=0`.
+`requirements.txt` is the authoritative Python runtime contract. Production narration requires `edge-tts==7.3.1` because Microsoft requires the Sec-MS-GEC v2 token for synthesis; Arabic production narration uses `ar-SA-HamedNeural`. Production visual fallback is disabled by `AURELIA_FORCE_FALLBACK=0`; degraded TTS is disabled by `AURELIA_ALLOW_DEGRADED_TTS=0`.
 
 ## Canonical path
 

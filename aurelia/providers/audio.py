@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -71,17 +72,18 @@ class EdgeTTSProvider(AudioProvider):
 
     @staticmethod
     def _probe_audio(path: Path) -> dict[str, Any]:
+        from ..ffmpeg_util import run_ffprobe
+
         try:
-            result = subprocess.run(
+            result = run_ffprobe(
                 [
-                    "ffprobe", "-v", "error", "-select_streams", "a:0",
+                    "-v", "error", "-select_streams", "a:0",
                     "-show_entries", "stream=codec_name,sample_rate,channels",
                     "-show_entries", "format=duration,size", "-of", "json", str(path),
                 ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
+                timeout_seconds=60,
+                stage="TTS output validation",
+                input_path=path,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(
@@ -140,15 +142,22 @@ class EdgeTTSProvider(AudioProvider):
             f"segment={segment_index} text_sha256={text_fingerprint} "
             f"output={output_path}"
         )
-        edge = shutil.which("edge-tts")
-        if edge is None:
-            reason = "edge-tts executable is not installed"
-            if self.allow_degraded and os.environ.get("AURELIA_PRODUCTION_MODE", "0") != "1":
-                return self._degraded_espeak(text, output_path, lang, reason)
-            raise RuntimeError(
-                f"Production TTS requires Edge Neural provider: {reason}; "
-                f"{diagnostic_prefix} attempt=0 validation=not-run artifact_bytes=0"
-            )
+        edge_executable = shutil.which("edge-tts")
+        edge_command = (
+            [edge_executable] if edge_executable
+            else [sys.executable, "-m", "edge_tts"]
+        )
+        if edge_executable is None:
+            try:
+                import edge_tts  # noqa: F401
+            except ImportError:
+                reason = "edge-tts console executable and Python module are unavailable"
+                if self.allow_degraded and os.environ.get("AURELIA_PRODUCTION_MODE", "0") != "1":
+                    return self._degraded_espeak(text, output_path, lang, reason)
+                raise RuntimeError(
+                    f"Production TTS requires Edge Neural provider: {reason}; "
+                    f"{diagnostic_prefix} attempt=0 validation=not-run artifact_bytes=0"
+                )
 
         last_error = ""
         attempt_errors: list[str] = []
@@ -166,7 +175,7 @@ class EdgeTTSProvider(AudioProvider):
                         source_mp3.unlink()
                     result = subprocess.run(
                         [
-                            edge, "--voice", voice, "--rate=-8%", "--pitch=-2Hz",
+                            *edge_command, "--voice", voice, "--rate=-8%", "--pitch=-2Hz",
                             "--text", text, "--write-media", str(source_mp3),
                         ],
                         capture_output=True,
@@ -180,9 +189,11 @@ class EdgeTTSProvider(AudioProvider):
                             f"edge-tts subprocess exit={result.returncode}: {detail}"
                         )[-1000:]
                         raise RuntimeError(last_error)
+                    from ..ffmpeg_util import ffmpeg_binary
+
                     convert = subprocess.run(
                         [
-                            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                            ffmpeg_binary(), "-y", "-hide_banner", "-loglevel", "error",
                             "-i", str(source_mp3), "-ar", "22050", "-ac", "1",
                             "-c:a", "pcm_s16le", str(converted_wav),
                         ],

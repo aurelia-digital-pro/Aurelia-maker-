@@ -1,6 +1,6 @@
 # AURELIA Maker — core requirements
 pyttsx3>=2.90
-edge-tts>=7.3.1,<8
+edge-tts==7.3.1
 pillow>=10.0.0
 pydub>=0.25.1
 numpy>=1.26.2

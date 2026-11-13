@@ -252,23 +252,31 @@ def generate_sound_design(
     total_frames = int(max(duration_sec, 5.0) * sample_rate)
     starts = [max(0.0, min(duration_sec - 0.9, float(boundary)))
               for boundary in sorted(scene_boundaries or [])]
+    # Buffer PCM in blocks. Calling wave.writeframes() once per sample frame
+    # rewrites the WAV header millions of times on long episodes and turns a
+    # trivial cue generator into a major production bottleneck.
+    block_frames = 4096
     with wave.open(str(output_path), "wb") as wav:
         wav.setnchannels(2)
         wav.setsampwidth(2)
         wav.setframerate(sample_rate)
-        for frame_index in range(total_frames):
-            now = frame_index / sample_rate
-            value = 0.0
-            for start in starts:
-                rel = now - start
-                if 0.0 <= rel < 0.9:
-                    envelope = min(1.0, rel / 0.16) * max(0.0, (0.9 - rel) / 0.70)
-                    rumble = math.sin(2.0 * math.pi * 92.0 * rel) * 0.028 * envelope
-                    deterministic_noise = math.sin(2.0 * math.pi * 1733.0 * rel) * 0.004 * envelope
-                    value += rumble + deterministic_noise
-            pcm = max(-1.0, min(1.0, value))
-            sample = int(pcm * 32767)
-            wav.writeframes(struct.pack("<hh", sample, sample))
+        for block_start in range(0, total_frames, block_frames):
+            frame_count = min(block_frames, total_frames - block_start)
+            block = bytearray(frame_count * 4)  # stereo, signed 16-bit PCM
+            for offset in range(frame_count):
+                frame_index = block_start + offset
+                now = frame_index / sample_rate
+                value = 0.0
+                for start in starts:
+                    rel = now - start
+                    if 0.0 <= rel < 0.9:
+                        envelope = min(1.0, rel / 0.16) * max(0.0, (0.9 - rel) / 0.70)
+                        rumble = math.sin(2.0 * math.pi * 92.0 * rel) * 0.028 * envelope
+                        deterministic_noise = math.sin(2.0 * math.pi * 1733.0 * rel) * 0.004 * envelope
+                        value += rumble + deterministic_noise
+                sample = int(max(-1.0, min(1.0, value)) * 32767)
+                struct.pack_into("<hh", block, offset * 4, sample, sample)
+            wav.writeframesraw(block)
     return _require_file(output_path, "Sound-design track")
 
 

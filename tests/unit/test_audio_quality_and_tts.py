@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import subprocess
+import sys
 
 import pytest
 
@@ -15,6 +16,8 @@ def test_edge_tts_fails_loudly_when_unavailable(monkeypatch, tmp_path: Path):
         "aurelia.providers.audio.shutil.which",
         lambda name: None if name == "edge-tts" else real_which(name),
     )
+    # Simulate a machine where neither the console script nor module exists.
+    monkeypatch.setitem(sys.modules, "edge_tts", None)
     provider = EdgeTTSProvider(allow_degraded=False)
     with pytest.raises(RuntimeError, match="requires Edge Neural provider"):
         provider.generate("هذا اختبار صوت عربي", tmp_path / "narration.wav", language="ar")
@@ -69,6 +72,7 @@ def test_degraded_tts_requires_explicit_opt_in(monkeypatch, tmp_path: Path):
         "aurelia.providers.audio.shutil.which",
         lambda name: None if name == "edge-tts" else real_which(name),
     )
+    monkeypatch.setitem(sys.modules, "edge_tts", None)
     monkeypatch.setenv("AURELIA_PRODUCTION_MODE", "0")
     provider = EdgeTTSProvider(allow_degraded=True)
     output = tmp_path / "degraded.wav"

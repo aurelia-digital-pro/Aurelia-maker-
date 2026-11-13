@@ -23,6 +23,52 @@ def test_edge_tts_fails_loudly_when_unavailable(monkeypatch, tmp_path: Path):
         provider.generate("هذا اختبار صوت عربي", tmp_path / "narration.wav", language="ar")
 
 
+def test_edge_tts_uses_python_module_when_console_script_is_not_on_path(monkeypatch, tmp_path: Path):
+    import wave
+
+    from aurelia.ffmpeg_util import ffmpeg_binary
+
+    monkeypatch.setattr(
+        "aurelia.providers.audio.shutil.which",
+        lambda name: None if name == "edge-tts" else ffmpeg_binary(),
+    )
+    monkeypatch.setattr(
+        "aurelia.providers.audio.EdgeTTSProvider._probe_audio",
+        staticmethod(lambda _path: {
+            "duration_s": 1.0,
+            "sample_rate": 22050,
+            "channels": 1,
+            "codec": "pcm_s16le",
+            "size_bytes": 1000,
+        }),
+    )
+    monkeypatch.setattr("aurelia.ffmpeg_util.ffmpeg_binary", lambda: "/fake/ffmpeg")
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        if command[1:3] == ["-m", "edge_tts"]:
+            Path(command[command.index("--write-media") + 1]).write_bytes(b"x" * 600)
+        else:
+            wav_path = Path(command[-1])
+            with wave.open(str(wav_path), "wb") as audio:
+                audio.setnchannels(1)
+                audio.setsampwidth(2)
+                audio.setframerate(22050)
+                audio.writeframes(b"\\x01\\x00" * 22050)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("aurelia.providers.audio.subprocess.run", fake_run)
+    provider = EdgeTTSProvider(allow_degraded=False)
+    output = tmp_path / "narration.wav"
+    provider.generate("Module entrypoint smoke test.", output, language="en")
+
+    assert output.is_file() and output.stat().st_size > 1000
+    assert commands[0][1:3] == ["-m", "edge_tts"]
+    assert provider.provenance["provider"] == "edge-tts"
+    assert provider.provenance["fallback"] is False
+
+
 def test_edge_tts_reports_timeout_attempts(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         "aurelia.providers.audio.shutil.which",
